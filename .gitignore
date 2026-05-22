@@ -1,0 +1,45 @@
+# ─── Python ─────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+build/
+dist/
+wheels/
+.eggs/
+
+# ─── Virtual environments ───────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ─── Test & type cache ──────────────────────────────────────────────────
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+
+# ─── Editor & OS ────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ─── Runtime artifacts ──────────────────────────────────────────────────
+*.log
+*.gguf
+.cache/
+
+# ─── Local secrets (defense in depth) ───────────────────────────────────
+.env
+.env.*
+!.env.example
