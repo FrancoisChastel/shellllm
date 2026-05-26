@@ -14,6 +14,18 @@ Runs against a local `llama-server`. No frontier model, no API key, works with w
 
 ## Quick start
 
+### Install with Homebrew (recommended)
+
+```sh
+brew install FrancoisChastel/shellllm/shellllm
+echo 'source "$(brew --prefix)/share/shellllm/shellllm.zsh"' >> ~/.zshrc
+exec zsh
+```
+
+That pulls `llama.cpp`, `fzf`, and the two CLIs (`shellllm-comma`, `shellllm-ask`). See [docs/HOMEBREW.md](docs/HOMEBREW.md) for the maintainer release flow.
+
+### Install from source
+
 ```sh
 # 1. install
 python3 -m venv .venv
