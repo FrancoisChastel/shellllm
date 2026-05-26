@@ -25,7 +25,6 @@ If you change `safe_fs.py`, the tests in `tests/test_safe_fs.py` are not optiona
 
 ## What's deliberately not built (yet)
 
-- **`!!`** (executing variant from the article's tease). Needs a `sandbox-exec` profile and a plan/review/execute loop. Don't add it without designing the safety layers first — see the `!!` section of the project notes.
 - Anything that lets `?` modify the filesystem, run shell commands, or follow URLs returned by `web_search`. The "read-only over the network" property is load-bearing.
 
 ## Code style

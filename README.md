@@ -4,7 +4,7 @@
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-Local-LLM zsh helpers, inspired by [*A comma and a question mark*](https://www.thetypicalset.com/blog/a-comma-and-a-question-mark).
+Local-LLM zsh helpers.
 
 - **`, <english>`** — proposes 3–5 shell commands with one-line notes, you pick one in `fzf`, it lands on your prompt line via `print -z`. Never auto-executes.
 - **`? <question>`** — small read-only agent with two tools: `read_file` (gated by a filesystem hard wall) and `web_search` (DuckDuckGo, snippets only). Answer streams as live-rendered markdown.
