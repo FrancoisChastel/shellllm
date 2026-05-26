@@ -94,7 +94,6 @@ pytest -v   # 38 tests covering symlinks, traversal, denylist, lookalikes, trunc
 
 ## What's deliberately not built
 
-- **`!!`** (executing variant from the article's tease). Needs a `sandbox-exec` profile and a plan/review/execute loop. Planned, not built.
 - **GBNF prefix grammar** for `,`. JSON schema is enough for v1; the system prompt forbids the obvious destructive commands.
 - **Web page fetching.** `?` sees search snippets but cannot follow URLs. Read-only over the network.
 
