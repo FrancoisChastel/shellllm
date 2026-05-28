@@ -24,6 +24,7 @@ from rich.live import Live
 from rich.markdown import Markdown
 
 from .client import LlamaServerError, chat_stream
+from .context import build_prelude
 from .safe_fs import WallViolation, safe_read_text
 from .web import fetch_url_as_text, search_as_text
 
@@ -184,14 +185,24 @@ def _stream_round_plain(messages: list[dict[str, Any]]) -> tuple[str, list[dict[
     return full_text, tool_calls
 
 
-def run_agent(user_prompt: str, *, system: str = ASK_SYSTEM) -> int:
+def run_agent(
+    user_prompt: str,
+    *,
+    system: str = ASK_SYSTEM,
+    include_context: bool = True,
+) -> int:
     """Run the tool-calling agent loop. Returns a process-style exit code.
 
     Exposed so other entry points (e.g. ``shellllm-search``) can reuse the
     same dispatch + streaming machinery with their own system prompt.
+
+    ``include_context=True`` prepends a date/time/OS prelude to the system
+    message — useful for any tool-using mode, essential for web search
+    where the model needs to know what "today" or "latest" means.
     """
+    full_system = f"{build_prelude()}\n\n{system}" if include_context else system
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": system},
+        {"role": "system", "content": full_system},
         {"role": "user", "content": user_prompt},
     ]
 
