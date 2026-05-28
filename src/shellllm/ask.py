@@ -27,7 +27,7 @@ from .client import LlamaServerError, chat_stream
 from .safe_fs import WallViolation, safe_read_text
 from .web import fetch_url_as_text, search_as_text
 
-MAX_ITERATIONS = 6
+MAX_ITERATIONS = 12
 
 TOOLS = [
     {
