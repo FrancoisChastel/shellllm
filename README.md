@@ -4,7 +4,7 @@
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-Local-LLM zsh helpers, inspired by [*A comma and a question mark*](https://www.thetypicalset.com/blog/a-comma-and-a-question-mark).
+Local-LLM zsh helpers.
 
 - **`, <english>`** — proposes 3–5 shell commands with one-line notes, you pick one in `fzf`, it lands on your prompt line via `print -z`. Never auto-executes.
 - **`? <question>`** — small read-only agent with two tools: `read_file` (gated by a filesystem hard wall) and `web_search` (DuckDuckGo, snippets only). Answer streams as live-rendered markdown.
@@ -13,6 +13,18 @@ Local-LLM zsh helpers, inspired by [*A comma and a question mark*](https://www.t
 Runs against a local `llama-server`. No frontier model, no API key, works with wifi off.
 
 ## Quick start
+
+### Install with Homebrew (recommended)
+
+```sh
+brew install FrancoisChastel/shellllm/shellllm
+echo 'source "$(brew --prefix)/share/shellllm/shellllm.zsh"' >> ~/.zshrc
+exec zsh
+```
+
+That pulls `llama.cpp`, `fzf`, and the two CLIs (`shellllm-comma`, `shellllm-ask`). See [docs/HOMEBREW.md](docs/HOMEBREW.md) for the maintainer release flow.
+
+### Install from source
 
 ```sh
 # 1. install
@@ -82,7 +94,6 @@ pytest -v   # 38 tests covering symlinks, traversal, denylist, lookalikes, trunc
 
 ## What's deliberately not built
 
-- **`!!`** (executing variant from the article's tease). Needs a `sandbox-exec` profile and a plan/review/execute loop. Planned, not built.
 - **GBNF prefix grammar** for `,`. JSON schema is enough for v1; the system prompt forbids the obvious destructive commands.
 - **Web page fetching.** `?` sees search snippets but cannot follow URLs. Read-only over the network.
 
