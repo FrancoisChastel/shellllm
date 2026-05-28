@@ -7,6 +7,7 @@
 
 : ${SHELLLM_COMMA:=shellllm-comma}
 : ${SHELLLM_ASK:=shellllm-ask}
+: ${SHELLLM_SEARCH:=shellllm-search}
 : ${SHELLLM_PORT:=8080}
 : ${SHELLLM_NGL:=99}
 : ${SHELLLM_CTX:=8192}
@@ -50,6 +51,12 @@ function _shellllm_ask_fn() {
   ${=SHELLLM_ASK} "$@"
 }
 alias '?'='noglob _shellllm_ask_fn'
+
+# ─── `???` — answer by searching the web first. Same noglob requirement.
+function _shellllm_search_fn() {
+  ${=SHELLLM_SEARCH} "$@"
+}
+alias '???'='noglob _shellllm_search_fn'
 
 # ─── server helpers ─────────────────────────────────────────────────────
 

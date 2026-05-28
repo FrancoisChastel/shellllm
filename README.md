@@ -7,7 +7,8 @@
 Local-LLM zsh helpers.
 
 - **`, <english>`** — proposes 3–5 shell commands with one-line notes, you pick one in `fzf`, it lands on your prompt line via `print -z`. Never auto-executes.
-- **`? <question>`** — small read-only agent with two tools: `read_file` (gated by a filesystem hard wall) and `web_search` (DuckDuckGo, snippets only). Answer streams as live-rendered markdown.
+- **`? <question>`** — small read-only agent with three tools: `read_file` (gated by a filesystem hard wall), `web_search` (DuckDuckGo) and `fetch_url` (follow a result into its page, plain-text). Searches only when the model decides it needs to. Answer streams as live-rendered markdown.
+- **`??? <question>`** — same agent, web-first: always starts with a `web_search` and follows the best link with `fetch_url`. Use it when you want fresh facts, not the model's prior.
 - **`??`** — start (or stop / list / status) the local `llama-server` backend, with named tiers for speed-vs-quality.
 
 Runs against a local `llama-server`. No frontier model, no API key, works with wifi off.
@@ -44,6 +45,7 @@ exec zsh
 # 4. use it
 , find the five largest files under this directory
 ? in markdown, what does git stash do?
+??? latest stable release of ripgrep and one notable change in it
 ```
 
 ## Tiers
@@ -69,11 +71,13 @@ huggingface-cli download unsloth/Qwen3-Coder-Next-GGUF
 src/shellllm/
 ├── safe_fs.py    filesystem hard wall — $HOME/$PWD + inside-HOME denylist
 ├── client.py     llama-server HTTP client (one-shot + streaming)
-├── comma.py      ,  — JSON-schema → fzf picker → stdout
-├── ask.py        ?  — streaming agent loop, live markdown render
-└── web.py        stdlib DuckDuckGo scraper (snippets only)
-tests/test_safe_fs.py   38 tests, all paths through the wall
-zsh/shellllm.zsh        function ,  + alias ?  + alias ??
+├── comma.py      ,    — JSON-schema → fzf picker → stdout
+├── ask.py        ?    — streaming agent loop, live markdown render
+├── search.py     ???  — same loop, web-search-first system prompt
+└── web.py        stdlib DuckDuckGo scraper + fetch_url with SSRF guard
+tests/test_safe_fs.py   filesystem-wall coverage
+tests/test_web.py       URL safety + HTML extraction
+zsh/shellllm.zsh        function ,  + aliases ? , ?? , ???
 .github/workflows/ci.yml  ruff + pytest on push & PR
 ```
 
@@ -95,7 +99,7 @@ pytest -v   # 38 tests covering symlinks, traversal, denylist, lookalikes, trunc
 ## What's deliberately not built
 
 - **GBNF prefix grammar** for `,`. JSON schema is enough for v1; the system prompt forbids the obvious destructive commands.
-- **Web page fetching.** `?` sees search snippets but cannot follow URLs. Read-only over the network.
+- **JavaScript rendering** for `fetch_url`. Pages are fetched as static HTML and reduced to text — SPAs that need JS to populate content will look empty.
 
 ## Tunables (environment variables)
 

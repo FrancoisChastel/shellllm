@@ -1,12 +1,16 @@
 """'?' — answer a question with a narrow read-only agent. Streams markdown.
 
-Two tools, both read-only:
+Three tools, all read-only:
   - read_file(path): goes through safe_fs (hard wall + denylist)
   - web_search(query): top 3 DuckDuckGo results, snippet text only
+  - fetch_url(url): follow one of those links and read the page
 
 Streamed answer renders as markdown via rich.live.Live, refreshing as
 chunks arrive. Tool-call traces and errors go to stderr so a `… | less`
 or `… > out.md` sees only the answer.
+
+The agent loop is exported as ``run_agent`` so the ``???`` search command
+(``shellllm.search``) can reuse it with a different system prompt.
 """
 
 from __future__ import annotations
@@ -21,7 +25,7 @@ from rich.markdown import Markdown
 
 from .client import LlamaServerError, chat_stream
 from .safe_fs import WallViolation, safe_read_text
-from .web import search_as_text
+from .web import fetch_url_as_text, search_as_text
 
 MAX_ITERATIONS = 6
 
@@ -53,8 +57,8 @@ TOOLS = [
             "name": "web_search",
             "description": (
                 "Search the web. Returns up to 3 results with title, URL, and "
-                "snippet. You cannot fetch the underlying pages — cite the "
-                "URL and quote from the snippet."
+                "snippet. Follow up with `fetch_url` when a snippet is too "
+                "thin to answer from."
             ),
             "parameters": {
                 "type": "object",
@@ -65,16 +69,43 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_url",
+            "description": (
+                "Fetch an http(s) URL and return the page as readable plain "
+                "text (HTML stripped). Use this to follow a link from "
+                "`web_search` when the snippet isn't enough. Refuses "
+                "private/local addresses. Returns up to 8000 characters."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Absolute http(s) URL.",
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    },
 ]
 
-SYSTEM = (
-    "You answer the user's question. You have two tools, both read-only: "
-    "`read_file` for files in $HOME or $PWD, and `web_search` for web "
-    "lookups. Call them only when you need to — many questions you can "
-    "answer directly. Format your answer in concise markdown. If a tool "
-    "refuses (e.g. `WallViolation`), respect the refusal and reason from "
-    "what you have."
+ASK_SYSTEM = (
+    "You answer the user's question. You have three tools, all read-only: "
+    "`read_file` for files in $HOME or $PWD, `web_search` for web lookups, "
+    "and `fetch_url` to follow a search result into its actual page. Call "
+    "them only when you need to — many questions you can answer directly. "
+    "When you do search, follow the most promising link with `fetch_url` "
+    "rather than answering from snippets alone. Format your answer in "
+    "concise markdown and cite the URLs you used. If a tool refuses (e.g. "
+    "`WallViolation`), respect the refusal and reason from what you have."
 )
+
+# Back-compat alias for any external importers.
+SYSTEM = ASK_SYSTEM
 
 # ANSI: dim grey for tool traces, reset, bright red for tool errors.
 _DIM = "\x1b[2m"
@@ -98,6 +129,11 @@ def _dispatch(name: str, args: dict[str, Any]) -> str:
             return search_as_text(args["query"])
         except KeyError:
             return "error: missing 'query'"
+    if name == "fetch_url":
+        try:
+            return fetch_url_as_text(args["url"])
+        except KeyError:
+            return "error: missing 'url'"
     return f"error: unknown tool {name!r}"
 
 
@@ -148,9 +184,14 @@ def _stream_round_plain(messages: list[dict[str, Any]]) -> tuple[str, list[dict[
     return full_text, tool_calls
 
 
-def _agent(user_prompt: str) -> int:
+def run_agent(user_prompt: str, *, system: str = ASK_SYSTEM) -> int:
+    """Run the tool-calling agent loop. Returns a process-style exit code.
+
+    Exposed so other entry points (e.g. ``shellllm-search``) can reuse the
+    same dispatch + streaming machinery with their own system prompt.
+    """
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": SYSTEM},
+        {"role": "system", "content": system},
         {"role": "user", "content": user_prompt},
     ]
 
@@ -199,7 +240,7 @@ def main() -> int:
         return 2
 
     try:
-        return _agent(prompt)
+        return run_agent(prompt)
     except LlamaServerError as exc:
         sys.stderr.write(f"{_RED}? error:{_RESET} {exc}\n")
         return 1
