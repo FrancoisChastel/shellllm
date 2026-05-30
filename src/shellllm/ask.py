@@ -30,6 +30,11 @@ from .web import fetch_url_as_text, search_as_text
 
 MAX_ITERATIONS = 12
 
+# Per-tool-result cap before injection into the message history. Sized to
+# absorb the full ``fetch_url`` payload (8000 chars) plus its truncation
+# footer without further chopping.
+MAX_TOOL_RESULT_CHARS = 10_000
+
 TOOLS = [
     {
         "type": "function",
@@ -236,7 +241,7 @@ def run_agent(
                 {
                     "role": "tool",
                     "tool_call_id": call["id"],
-                    "content": result[:4000],
+                    "content": result[:MAX_TOOL_RESULT_CHARS],
                 }
             )
 

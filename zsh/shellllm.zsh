@@ -10,7 +10,7 @@
 : ${SHELLLM_SEARCH:=shellllm-search}
 : ${SHELLLM_PORT:=8080}
 : ${SHELLLM_NGL:=99}
-: ${SHELLLM_CTX:=8192}
+: ${SHELLLM_CTX:=32768}
 : ${SHELLLM_LOG:=$HOME/.cache/shellllm/llama-server.log}
 
 # ─── Tier registry ──────────────────────────────────────────────────────

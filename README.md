@@ -109,7 +109,7 @@ pytest -v   # 38 tests covering symlinks, traversal, denylist, lookalikes, trunc
 | `SHELLLM_LLAMA_MODEL` | — | explicit GGUF path, overrides tier |
 | `SHELLLM_PORT` | `8080` | server port |
 | `SHELLLM_NGL` | `99` | GPU offload layers |
-| `SHELLLM_CTX` | `8192` | context window |
+| `SHELLLM_CTX` | `32768` | context window (tokens) |
 | `SHELLLM_LOG` | `~/.cache/shellllm/llama-server.log` | server log path |
 | `SHELLLM_TIMEOUT` | `120` | HTTP timeout (seconds) |
 
