@@ -10,7 +10,7 @@ Four commands, each does one thing:
 
 - **`, <english>`** — proposes 3–5 shell commands with one-line notes, you pick one in `fzf`, it lands on your prompt line via `print -z`. Never auto-executes. Sticky per-pane session so follow-ups refine the prior list (`, the same but only the running ones`).
 - **`? <question>`** — small read-only agent with three tools: `read_file` (gated by a filesystem hard wall), `web_search` (DuckDuckGo) and `fetch_url` (follow a result into its page, plain-text). Searches only when the model decides it needs to — pass `? --web <q>` to force it. Answer streams as live-rendered markdown. Each terminal pane keeps its own sticky conversation; follow-ups continue automatically until 30 min of idle (or `? --new`).
-- **`??? <subcommand or query>`** — the memory layer. `??? <bare query>` searches the archive of past sessions. Subcommands manage facts: `??? add <fact>`, `??? list`, `??? drop <n>`, `??? status`. To recall the literal word "add", use `??? recall add`.
+- **`??? <query or flag>`** — the memory layer. `??? <bare query>` searches the archive of past sessions. Flags manage facts: `??? --add <fact>`, `??? --list`, `??? --drop <n>`, `??? --status`. Bare-word search terms (like `??? list`) recall the word — flags are the only "verbs".
 - **`??`** — start (or stop / list / status) the local `llama-server` backend, with named tiers for speed-vs-quality. `?? --start-embed` boots a second `llama-server` in embedding mode for hybrid semantic recall.
 
 Runs against a local `llama-server`. No frontier model, no API key, works with wifi off.
@@ -49,7 +49,7 @@ exec zsh
 , the same but only ones modified today        # refines the prior , — sticky session
 ? in markdown, what does git stash do?
 ? --web latest stable release of ripgrep       # force web-first this turn
-??? add I prefer ripgrep over grep             # long-term fact, used by all asks
+??? --add I prefer ripgrep over grep           # long-term fact, used by all asks
 ??? ripgrep                                    # search past sessions across panes
 ```
 
@@ -126,28 +126,28 @@ search the archive of past sessions across all panes and days:
 ??? docker volumes
 ```
 
-Subcommands manage long-term facts that get injected into every `?`
-system prompt:
+Every other operation is a flag — no bare-word verbs, so any
+non-flag input is unambiguously a recall query:
 
 ```sh
-??? add I prefer ripgrep over grep    # pin a long-term fact
-??? list                              # see them
-??? drop 2                            # remove fact #2
-??? status                            # counts: facts + archives
-??? help
+??? --add I prefer ripgrep over grep    # pin a long-term fact
+??? --list                              # see them
+??? --drop 2                            # remove fact #2
+??? --status                            # counts: facts + archives
+??? --help
 ```
 
-To recall the literal word `add` / `list` / `drop` / `status` /
-`recall` / `help` (so the parser doesn't dispatch to a subcommand),
-use the explicit form `??? recall add`.
-
-Filter by which command produced the session:
+Filter recall by which command produced the session:
 
 ```sh
 ??? --ask docker volumes        # only `?` sessions
 ??? --comma docker volumes      # only `,` sessions
 ??? docker volumes              # both (default)
 ```
+
+Mode flags (`--add` / `--list` / `--drop` / `--status`) are mutually
+exclusive. Filter flags only apply to recall — combining `--ask` with
+`--list` errors because facts are global.
 
 The archive at `~/.cache/shellllm/archive.db` gets populated
 automatically whenever a session expires or you call `? --new` /
@@ -244,7 +244,7 @@ src/shellllm/
 ├── client.py     llama-server HTTP client (one-shot + streaming)
 ├── comma.py      ,    — JSON-schema → fzf picker → stdout
 ├── ask.py        ?    — streaming agent loop, --web flag, live markdown render
-├── recall.py     ???  — memory layer: bare-query recall + fact subcommands
+├── recall.py     ???  — memory layer: bare-query recall + fact flags
 ├── comma.py      ,    — JSON-schema → fzf picker, sticky session for refinement
 ├── session.py    per-pane conversation persistence (JSONL + idle TTL)
 ├── memory.py     long-term fact store backing `??? add` / `??? list`
@@ -260,7 +260,7 @@ tests/test_memory.py         fact store + size cap + archive overflow
 tests/test_compact.py        compaction preserves turn boundaries
 tests/test_archive.py        FTS5 + cosine recall, RRF fusion, dim-mismatch tolerance
 tests/test_embed.py          embedding client + pack/unpack + cosine helpers
-tests/test_recall.py         ??? bare-query and subcommand dispatch
+tests/test_recall.py         ??? bare-query + flag-only dispatch
 tests/test_ask_web_flag.py   ? --web swaps to web-first system prompt
 tests/test_comma_session.py  , refines across turns; archive on TTL
 tests/test_claude_mem.py     adapter gating + payload shape + error swallowing
@@ -281,7 +281,7 @@ Every file read goes through `safe_fs.safe_read`. Four rules, all enforced:
 Reads cap at 1 MB and use `O_NOFOLLOW` on the final component as a belt against a resolve-then-open symlink race.
 
 ```sh
-pytest -v   # 178 tests; safe_fs alone covers symlinks, traversal, denylist, lookalikes, truncation
+pytest -v   # 181 tests; safe_fs alone covers symlinks, traversal, denylist, lookalikes, truncation
 ```
 
 ## What's deliberately not built

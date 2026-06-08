@@ -9,27 +9,26 @@ lives here.
 Shape
 ~~~~~
 
-Bare query (most-used path) — implicit recall::
+Bare query is the most-used path — implicit recall::
 
     ??? what was that grep flag again
     ??? ripgrep
 
-Subcommands for fact management and explicit recall::
+Every other operation is a flag — no bare-word verbs::
 
-    ??? add <fact>        pin a long-term fact
-    ??? list              list facts
-    ??? drop <n>          drop fact #n
-    ??? recall <query>    explicit recall (use this when the query
-                          starts with a word that's also a subcommand)
-    ??? status            counts
-    ??? help
+    ??? --add <fact>          pin a long-term fact
+    ??? --list                list facts
+    ??? --drop <n>            drop fact #n
+    ??? --status              counts (facts + archives)
+    ??? --help                usage
 
-The "bare query vs subcommand" disambiguation is the only piece worth
-spelling out: if the first arg is one of the known subcommand verbs
-(``add``, ``list``, ``drop``, ``recall``, ``status``, ``help``), it's
-a subcommand; otherwise the whole tail is a recall query. To search
-for a literal subcommand word, use the explicit ``??? recall <word>``
-form.
+    ??? --ask <query>         recall only `?` sessions
+    ??? --comma <query>       recall only `,` sessions
+
+Mode flags (``--add`` / ``--list`` / ``--drop`` / ``--status``) are
+mutually exclusive. Filter flags (``--ask`` / ``--comma``) only make
+sense alongside a recall query — combining them with a mode flag
+errors, because facts are global and counts are global.
 """
 
 from __future__ import annotations
@@ -55,11 +54,12 @@ def _safe_embed(text: str) -> list[float] | None:
         return None
 
 
-SUBCOMMANDS = frozenset({"add", "list", "drop", "recall", "status", "help"})
+# Mutually-exclusive "do this instead of recall" flags.
+_MODE_FLAGS = ("--add", "--list", "--drop", "--status")
 
-# Filter flags map a flag → the ``cmd`` field they restrict recall to.
-# Add new entries here when a new asking surface is introduced.
-_CMD_FILTERS: dict[str, str] = {
+# Restrict recall to a single asking surface. Extend when a new asking
+# command is added.
+_FILTER_FLAGS: dict[str, str] = {
     "--ask": "ask",
     "--comma": "comma",
 }
@@ -70,13 +70,11 @@ def _print_usage(label: str = "???") -> None:
         f"usage: {label} <query>                  recall: search archive\n"
         f"       {label} --ask <query>            recall only `?` sessions\n"
         f"       {label} --comma <query>          recall only `,` sessions\n"
-        f"       {label} add <fact>               save a long-term fact\n"
-        f"       {label} list                     list saved facts\n"
-        f"       {label} drop <n>                 drop fact #n\n"
-        f"       {label} recall <query>           explicit recall (use when query\n"
-        f"                                        starts with a subcommand word)\n"
-        f"       {label} status                   show counts\n"
-        f"       {label} help                     show this message\n"
+        f"       {label} --add <fact>             save a long-term fact\n"
+        f"       {label} --list                   list saved facts\n"
+        f"       {label} --drop <n>               drop fact #n\n"
+        f"       {label} --status                 show counts\n"
+        f"       {label} --help                   show this message\n"
     )
 
 
@@ -116,7 +114,7 @@ def _do_recall(archive: Archive, query: str, *, cmd_filter: str | None = None) -
 def _cmd_add(memory: MemoryStore, rest: list[str]) -> int:
     text = " ".join(rest).strip()
     if not text:
-        sys.stderr.write(f"{_RED}??? error:{_RESET} `add` needs a fact\n")
+        sys.stderr.write(f"{_RED}??? error:{_RESET} `--add` needs a fact\n")
         return 2
     try:
         fact = memory.add(text)
@@ -127,7 +125,10 @@ def _cmd_add(memory: MemoryStore, rest: list[str]) -> int:
     return 0
 
 
-def _cmd_list(memory: MemoryStore) -> int:
+def _cmd_list(memory: MemoryStore, rest: list[str]) -> int:
+    if rest:
+        sys.stderr.write(f"{_RED}??? error:{_RESET} `--list` takes no arguments\n")
+        return 2
     facts = memory.load()
     if not facts:
         print("(no remembered facts)")
@@ -139,7 +140,10 @@ def _cmd_list(memory: MemoryStore) -> int:
 
 def _cmd_drop(memory: MemoryStore, rest: list[str]) -> int:
     if not rest:
-        sys.stderr.write(f"{_RED}??? error:{_RESET} `drop` needs an index\n")
+        sys.stderr.write(f"{_RED}??? error:{_RESET} `--drop` needs an index\n")
+        return 2
+    if len(rest) > 1:
+        sys.stderr.write(f"{_RED}??? error:{_RESET} `--drop` takes one index\n")
         return 2
     try:
         idx = int(rest[0])
@@ -154,70 +158,82 @@ def _cmd_drop(memory: MemoryStore, rest: list[str]) -> int:
     return 0
 
 
-def _cmd_status(memory: MemoryStore, archive: Archive) -> int:
+def _cmd_status(memory: MemoryStore, archive: Archive, rest: list[str]) -> int:
+    if rest:
+        sys.stderr.write(f"{_RED}??? error:{_RESET} `--status` takes no arguments\n")
+        return 2
     facts = memory.load()
     print(f"{len(facts)} remembered facts · {archive.count()} archived sessions")
     return 0
 
 
+def _collect_mode(argv: list[str]) -> tuple[str | None, int]:
+    """Pull a single mode flag from ``argv``. Multi-mode → error code."""
+    present = [f for f in _MODE_FLAGS if f in argv]
+    if len(present) > 1:
+        sys.stderr.write(
+            f"{_RED}??? error:{_RESET} only one of {', '.join(_MODE_FLAGS)} at a time\n"
+        )
+        return None, 2
+    if present:
+        argv.remove(present[0])
+        return present[0], 0
+    return None, 0
+
+
+def _collect_filter(argv: list[str]) -> tuple[str | None, int]:
+    """Pull a single filter flag from ``argv``. Multi-filter → error code."""
+    present = [f for f in _FILTER_FLAGS if f in argv]
+    if len(present) > 1:
+        sys.stderr.write(
+            f"{_RED}??? error:{_RESET} only one of {', '.join(_FILTER_FLAGS)} at a time\n"
+        )
+        return None, 2
+    if present:
+        argv.remove(present[0])
+        return _FILTER_FLAGS[present[0]], 0
+    return None, 0
+
+
 def main() -> int:
     argv = list(sys.argv[1:])
-    if not argv:
+    if not argv or argv[0] in ("--help", "-h"):
         _print_usage()
         return 0
 
-    # Pull --ask / --comma off the front of argv so the rest is either a
-    # bare query or a subcommand line. We only allow filter flags at
-    # the start to keep the parser unambiguous: `??? add --ask foo`
-    # would be confusing — does --ask filter the add? It doesn't.
-    cmd_filter: str | None = None
-    while argv and argv[0] in _CMD_FILTERS:
-        flag = argv.pop(0)
-        cmd_filter = _CMD_FILTERS[flag]
+    mode, err = _collect_mode(argv)
+    if err:
+        return err
 
-    if not argv:
-        # Filter-only invocation: `??? --ask` with no query.
-        sys.stderr.write(f"{_RED}??? error:{_RESET} no query after filter flag\n")
-        return 2
+    cmd_filter, err = _collect_filter(argv)
+    if err:
+        return err
 
-    first, *rest = argv
     memory = MemoryStore()
     archive = Archive()
 
-    if first in ("help", "--help", "-h"):
-        _print_usage()
-        return 0
-
-    # Filter flags only make sense for recall paths. If the user
-    # combined `--ask` with `add` / `list` / `drop` / `status`, that's
-    # almost certainly a typo — facts are global, not per-command.
-    if cmd_filter is not None and first in SUBCOMMANDS and first != "recall":
+    # Filter flags only apply to recall paths. Combining with a mode
+    # flag is almost certainly a typo — facts and counts are global.
+    if cmd_filter is not None and mode is not None:
         sys.stderr.write(
-            f"{_RED}??? error:{_RESET} filter flags only apply to recall, not `{first}`\n"
+            f"{_RED}??? error:{_RESET} filter flags only apply to recall, not `{mode}`\n"
         )
         return 2
 
-    # Bare query: first word isn't a known subcommand → treat the whole
-    # tail as a recall query. This makes `??? what was that flag` work
-    # without typing `recall` every time, which is the most-used path.
-    if first not in SUBCOMMANDS:
-        return _do_recall(archive, " ".join(argv), cmd_filter=cmd_filter)
+    if mode == "--add":
+        return _cmd_add(memory, argv)
+    if mode == "--list":
+        return _cmd_list(memory, argv)
+    if mode == "--drop":
+        return _cmd_drop(memory, argv)
+    if mode == "--status":
+        return _cmd_status(memory, archive, argv)
 
-    if first == "recall":
-        return _do_recall(archive, " ".join(rest), cmd_filter=cmd_filter)
-    if first == "add":
-        return _cmd_add(memory, rest)
-    if first == "list":
-        return _cmd_list(memory)
-    if first == "drop":
-        return _cmd_drop(memory, rest)
-    if first == "status":
-        return _cmd_status(memory, archive)
-
-    # Shouldn't get here — keeps mypy/pyright happy and gives a clean
-    # message if a subcommand gets added to the set but not dispatched.
-    sys.stderr.write(f"{_RED}??? error:{_RESET} unhandled subcommand {first!r}\n")
-    return 2
+    # No mode flag → recall path. Filter is optional.
+    if not argv:
+        sys.stderr.write(f"{_RED}??? error:{_RESET} no query\n")
+        return 2
+    return _do_recall(archive, " ".join(argv), cmd_filter=cmd_filter)
 
 
 if __name__ == "__main__":

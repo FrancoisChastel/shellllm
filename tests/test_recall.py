@@ -1,8 +1,8 @@
 """Tests for the `???` (shellllm-recall) CLI.
 
-Covers the bare-query-vs-subcommand dispatch, each fact-management
-subcommand, and the explicit ``recall`` escape hatch for queries that
-start with a subcommand word.
+Every operation other than bare-query recall is a flag — no
+subcommand verbs. Tests cover mode-flag dispatch, filter flags,
+multi-flag rejection, and the bare-query fallback.
 """
 
 from __future__ import annotations
@@ -35,130 +35,112 @@ def test_no_args_prints_usage(monkeypatch, capsys, isolated):
     assert "usage: ???" in capsys.readouterr().out
 
 
-def test_help_subcommand(monkeypatch, capsys, isolated):
-    for variant in (["help"], ["--help"], ["-h"]):
+def test_help_flag(monkeypatch, capsys, isolated):
+    for variant in (["--help"], ["-h"]):
         assert _run(variant, monkeypatch) == 0
         assert "usage: ???" in capsys.readouterr().out
 
 
 def test_bare_query_routes_to_recall(monkeypatch, capsys, isolated):
-    # Empty archive — just verify no crash, no recall error.
     assert _run(["what", "was", "that", "grep", "flag"], monkeypatch) == 0
     assert "no archive hits" in capsys.readouterr().out
 
 
-def test_first_word_subcommand_routes_to_subcommand(monkeypatch, capsys, isolated):
-    # `list` is a subcommand — should not be treated as a recall query.
+def test_bare_query_starting_with_word_list_still_recalls(monkeypatch, capsys, isolated):
+    """No bare-word subcommands → `list` is a regular search term now."""
     assert _run(["list"], monkeypatch) == 0
     out = capsys.readouterr().out
-    assert "no remembered facts" in out
+    assert "no archive hits for 'list'" in out
 
 
-# ── Facts ----------------------------------------------------------------
+# ── Facts (mode flags) ---------------------------------------------------
 
 
 def test_add_then_list(monkeypatch, capsys, isolated):
-    assert _run(["add", "the", "project", "uses", "python"], monkeypatch) == 0
+    assert _run(["--add", "the", "project", "uses", "python"], monkeypatch) == 0
     capsys.readouterr()
-    assert _run(["list"], monkeypatch) == 0
+    assert _run(["--list"], monkeypatch) == 0
     out = capsys.readouterr().out
     assert "the project uses python" in out
 
 
 def test_add_empty_errors(monkeypatch, capsys, isolated):
-    assert _run(["add"], monkeypatch) == 2
+    assert _run(["--add"], monkeypatch) == 2
     assert "needs a fact" in capsys.readouterr().err
 
 
+def test_list_with_extra_args_errors(monkeypatch, capsys, isolated):
+    assert _run(["--list", "extra"], monkeypatch) == 2
+    assert "takes no arguments" in capsys.readouterr().err
+
+
 def test_drop_removes_by_index(monkeypatch, capsys, isolated):
-    _run(["add", "alpha"], monkeypatch)
-    _run(["add", "beta"], monkeypatch)
+    _run(["--add", "alpha"], monkeypatch)
+    _run(["--add", "beta"], monkeypatch)
     capsys.readouterr()
-    assert _run(["drop", "1"], monkeypatch) == 0
+    assert _run(["--drop", "1"], monkeypatch) == 0
     capsys.readouterr()
-    assert _run(["list"], monkeypatch) == 0
+    assert _run(["--list"], monkeypatch) == 0
     out = capsys.readouterr().out
     assert "alpha" not in out
     assert "beta" in out
 
 
 def test_drop_non_integer_errors(monkeypatch, capsys, isolated):
-    assert _run(["drop", "abc"], monkeypatch) == 2
+    assert _run(["--drop", "abc"], monkeypatch) == 2
     assert "integer" in capsys.readouterr().err
 
 
 def test_drop_out_of_range_errors(monkeypatch, capsys, isolated):
-    _run(["add", "x"], monkeypatch)
+    _run(["--add", "x"], monkeypatch)
     capsys.readouterr()
-    assert _run(["drop", "99"], monkeypatch) == 2
+    assert _run(["--drop", "99"], monkeypatch) == 2
     assert "no fact at index" in capsys.readouterr().err
 
 
+def test_drop_no_arg_errors(monkeypatch, capsys, isolated):
+    assert _run(["--drop"], monkeypatch) == 2
+    assert "needs an index" in capsys.readouterr().err
+
+
+def test_drop_multiple_args_errors(monkeypatch, capsys, isolated):
+    assert _run(["--drop", "1", "2"], monkeypatch) == 2
+    assert "one index" in capsys.readouterr().err
+
+
 def test_status_reports_counts(monkeypatch, capsys, isolated):
-    _run(["add", "a"], monkeypatch)
-    _run(["add", "b"], monkeypatch)
+    _run(["--add", "a"], monkeypatch)
+    _run(["--add", "b"], monkeypatch)
     capsys.readouterr()
-    assert _run(["status"], monkeypatch) == 0
+    assert _run(["--status"], monkeypatch) == 0
     out = capsys.readouterr().out
     assert "2 remembered facts" in out
     assert "0 archived sessions" in out
 
 
-# ── Recall ---------------------------------------------------------------
+def test_status_with_args_errors(monkeypatch, capsys, isolated):
+    assert _run(["--status", "extra"], monkeypatch) == 2
+    assert "takes no arguments" in capsys.readouterr().err
 
 
-def test_explicit_recall_with_subcommand_word(monkeypatch, capsys, isolated):
-    """`??? recall add` must search for the literal word "add", not
-    invoke the `add` subcommand."""
-    assert _run(["recall", "add"], monkeypatch) == 0
-    assert "no archive hits" in capsys.readouterr().out
+# ── Multi-flag rejection -------------------------------------------------
 
 
-def test_explicit_recall_without_query_errors(monkeypatch, capsys, isolated):
-    assert _run(["recall"], monkeypatch) == 2
-    assert "needs a query" in capsys.readouterr().err
+def test_two_mode_flags_errors(monkeypatch, capsys, isolated):
+    assert _run(["--add", "x", "--list"], monkeypatch) == 2
+    assert "only one of" in capsys.readouterr().err
 
 
-def test_bare_recall_finds_archived_session(monkeypatch, capsys, isolated):
-    from shellllm.archive import Archive
-
-    Archive().ingest_session(
-        cmd="ask",
-        terminal_id="t1",
-        created_at=1.0,
-        last_used=2.0,
-        last_pwd="/tmp",
-        last_date="2026-06-08",
-        turn_count=1,
-        messages=[
-            {"role": "user", "content": "how do I use ripgrep"},
-            {"role": "assistant", "content": "rg pattern path"},
-        ],
-    )
-    assert _run(["ripgrep"], monkeypatch) == 0
-    out = capsys.readouterr().out
-    assert "ripgrep" in out.lower()
+def test_two_filter_flags_errors(monkeypatch, capsys, isolated):
+    assert _run(["--ask", "--comma", "x"], monkeypatch) == 2
+    assert "only one of" in capsys.readouterr().err
 
 
-def test_bare_multiword_query_is_joined(monkeypatch, capsys, isolated):
-    from shellllm.archive import Archive
-
-    Archive().ingest_session(
-        cmd="ask",
-        terminal_id="t1",
-        created_at=1.0,
-        last_used=2.0,
-        last_pwd="/tmp",
-        last_date="2026-06-08",
-        turn_count=1,
-        messages=[
-            {"role": "user", "content": "how do docker volumes work"},
-            {"role": "assistant", "content": "they mount paths into the container"},
-        ],
-    )
-    assert _run(["docker", "volumes"], monkeypatch) == 0
-    out = capsys.readouterr().out
-    assert "docker" in out.lower()
+def test_filter_with_mode_flag_errors(monkeypatch, capsys, isolated):
+    """Filters only apply to recall, not to fact management."""
+    assert _run(["--ask", "--list"], monkeypatch) == 2
+    err = capsys.readouterr().err
+    assert "only apply to recall" in err
 
 
 # ── Filter flags ---------------------------------------------------------
@@ -201,7 +183,6 @@ def test_ask_filter_returns_only_ask_rows(monkeypatch, capsys, isolated):
     _seed_two_cmd_archives()
     assert _run(["--ask", "ripgrep"], monkeypatch) == 0
     out = capsys.readouterr().out
-    # The format includes the cmd label as a column header — count it.
     assert out.count("ask") >= 1
     assert "comma" not in out
 
@@ -210,34 +191,62 @@ def test_comma_filter_returns_only_comma_rows(monkeypatch, capsys, isolated):
     _seed_two_cmd_archives()
     assert _run(["--comma", "ripgrep"], monkeypatch) == 0
     out = capsys.readouterr().out
-    assert out.count("comma") >= 1
-    # `ask` would appear in cmd column header for ask hits; it shouldn't.
-    # We can't grep for raw "ask" because the substring could appear in
-    # snippets, but checking for the dim-formatted cmd marker is enough:
-    # if no row has cmd="ask", we won't see the standalone CLI label.
-    # Easiest: count cmd-labeled rows via the snippet text.
-    assert "rg pattern" not in out  # the ask row's snippet body
-
-
-def test_filter_flag_no_query_errors(monkeypatch, capsys, isolated):
-    assert _run(["--ask"], monkeypatch) == 2
-    assert "no query after filter flag" in capsys.readouterr().err
-
-
-def test_filter_with_non_recall_subcommand_errors(monkeypatch, capsys, isolated):
-    assert _run(["--ask", "list"], monkeypatch) == 2
-    err = capsys.readouterr().err
-    assert "only apply to recall" in err
-
-
-def test_filter_with_explicit_recall(monkeypatch, capsys, isolated):
-    """`??? --ask recall add` must search only ask sessions for word "add"."""
-    _seed_two_cmd_archives()
-    assert _run(["--ask", "recall", "add"], monkeypatch) == 0
-    # Empty match is fine (just verifying parse path works); no crash.
+    assert "comma" in out
+    # The ask row's snippet body should NOT appear.
+    assert "rg pattern" not in out
 
 
 def test_filter_no_hits_includes_scope_in_message(monkeypatch, capsys, isolated):
     assert _run(["--ask", "totallyabsent"], monkeypatch) == 0
     out = capsys.readouterr().out
     assert "in `ask` sessions" in out
+
+
+def test_filter_with_no_query_errors(monkeypatch, capsys, isolated):
+    assert _run(["--ask"], monkeypatch) == 2
+    assert "no query" in capsys.readouterr().err
+
+
+# ── Bare-recall edge cases -----------------------------------------------
+
+
+def test_bare_recall_finds_archived_session(monkeypatch, capsys, isolated):
+    from shellllm.archive import Archive
+
+    Archive().ingest_session(
+        cmd="ask",
+        terminal_id="t1",
+        created_at=1.0,
+        last_used=2.0,
+        last_pwd="/tmp",
+        last_date="2026-06-08",
+        turn_count=1,
+        messages=[
+            {"role": "user", "content": "how do I use ripgrep"},
+            {"role": "assistant", "content": "rg pattern path"},
+        ],
+    )
+    assert _run(["ripgrep"], monkeypatch) == 0
+    out = capsys.readouterr().out
+    assert "ripgrep" in out.lower()
+
+
+def test_bare_multiword_query_is_joined(monkeypatch, capsys, isolated):
+    from shellllm.archive import Archive
+
+    Archive().ingest_session(
+        cmd="ask",
+        terminal_id="t1",
+        created_at=1.0,
+        last_used=2.0,
+        last_pwd="/tmp",
+        last_date="2026-06-08",
+        turn_count=1,
+        messages=[
+            {"role": "user", "content": "how do docker volumes work"},
+            {"role": "assistant", "content": "they mount paths into the container"},
+        ],
+    )
+    assert _run(["docker", "volumes"], monkeypatch) == 0
+    out = capsys.readouterr().out
+    assert "docker" in out.lower()

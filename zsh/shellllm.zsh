@@ -77,16 +77,18 @@ alias '?'='noglob _shellllm_ask_fn'
 # ─── `???` — memory layer: long-term facts + cross-session recall.
 #
 #   ??? <q>             bare query → search archived sessions
-#   ??? add <fact>      pin a long-term fact
-#   ??? list            list facts
-#   ??? drop <n>        drop fact #n
-#   ??? recall <q>      explicit recall (use when the query starts with
-#                       a word that's also a subcommand)
-#   ??? status          counts
-#   ??? help            usage
+#   ??? --add <fact>    pin a long-term fact
+#   ??? --list          list facts
+#   ??? --drop <n>      drop fact #n
+#   ??? --status        counts
+#   ??? --ask <q>       recall only `?` sessions
+#   ??? --comma <q>     recall only `,` sessions
+#   ??? --help          usage
 #
-# `noglob` is needed because `?` is a zsh glob char; aliasing `???`
-# directly is fine because alias expansion runs before globbing.
+# Every operation other than bare-query recall is a flag — no
+# bare-word verbs. `noglob` is needed because `?` is a zsh glob char;
+# aliasing `???` directly is fine because alias expansion runs before
+# globbing.
 function _shellllm_recall_fn() {
   ${=SHELLLM_RECALL} "$@"
 }
