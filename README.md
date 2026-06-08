@@ -145,9 +145,20 @@ Filter recall by which command produced the session:
 ??? docker volumes              # both (default)
 ```
 
-Mode flags (`--add` / `--list` / `--drop` / `--status`) are mutually
-exclusive. Filter flags only apply to recall — combining `--ask` with
-`--list` errors because facts are global.
+Browse the archive directly (no FTS query, useful for "what's even in
+there?"):
+
+```sh
+??? --archives          # 20 most-recent (id, cmd, ts, pwd, snippet)
+??? --archives 50       # show 50
+??? --ask --archives    # filter to one command's archives
+??? --show 42           # full transcript of archive #42
+```
+
+Mode flags (`--add` / `--list` / `--drop` / `--status` / `--archives`
+/ `--show`) are mutually exclusive. Filter flags (`--ask` / `--comma`)
+only apply to recall and `--archives` — combining `--ask` with `--list`
+errors because facts are global.
 
 The archive at `~/.cache/shellllm/archive.db` gets populated
 automatically whenever a session expires or you call `? --new` /
@@ -281,7 +292,7 @@ Every file read goes through `safe_fs.safe_read`. Four rules, all enforced:
 Reads cap at 1 MB and use `O_NOFOLLOW` on the final component as a belt against a resolve-then-open symlink race.
 
 ```sh
-pytest -v   # 181 tests; safe_fs alone covers symlinks, traversal, denylist, lookalikes, truncation
+pytest -v   # 197 tests; safe_fs alone covers symlinks, traversal, denylist, lookalikes, truncation
 ```
 
 ## What's deliberately not built

@@ -55,7 +55,14 @@ def _safe_embed(text: str) -> list[float] | None:
 
 
 # Mutually-exclusive "do this instead of recall" flags.
-_MODE_FLAGS = ("--add", "--list", "--drop", "--status")
+_MODE_FLAGS = ("--add", "--list", "--drop", "--status", "--archives", "--show")
+
+# Mode flags that can't be narrowed by ``--ask`` / ``--comma``.
+# - facts ops (``--add``/``--list``/``--drop``) are global
+# - ``--status`` counts are global
+# - ``--show <id>`` already targets exactly one row
+# Only ``--archives`` and bare recall accept filters.
+_GLOBAL_MODES = frozenset({"--add", "--list", "--drop", "--status", "--show"})
 
 # Restrict recall to a single asking surface. Extend when a new asking
 # command is added.
@@ -63,6 +70,9 @@ _FILTER_FLAGS: dict[str, str] = {
     "--ask": "ask",
     "--comma": "comma",
 }
+
+# Default for ``--archives`` when no count argument is given.
+_DEFAULT_ARCHIVES_LIMIT = 20
 
 
 def _print_usage(label: str = "???") -> None:
@@ -74,8 +84,25 @@ def _print_usage(label: str = "???") -> None:
         f"       {label} --list                   list saved facts\n"
         f"       {label} --drop <n>               drop fact #n\n"
         f"       {label} --status                 show counts\n"
+        f"       {label} --archives [n]           list n recent archived sessions\n"
+        f"                                        (default 20; --ask / --comma filter)\n"
+        f"       {label} --show <id>              print full transcript of one archive\n"
         f"       {label} --help                   show this message\n"
     )
+
+
+def _format_archive_row(hit) -> str:
+    """One-line summary for ``--archives`` listings: id · cmd · ts · pwd · snippet."""
+    when = datetime.fromtimestamp(hit.archived_at).strftime("%Y-%m-%d %H:%M")
+    parts = [
+        f"{_DIM}#{hit.id:<4}{_RESET}",
+        f"{_CYAN}{hit.cmd}{_RESET}",
+        f"{_DIM}{when}{_RESET}",
+    ]
+    if hit.last_pwd:
+        parts.append(f"{_DIM}{hit.last_pwd}{_RESET}")
+    header = " · ".join(parts)
+    return f"{header}\n  {hit.snippet}\n\n"
 
 
 def _format_recall_hit(idx: int, hit) -> str:
@@ -167,6 +194,60 @@ def _cmd_status(memory: MemoryStore, archive: Archive, rest: list[str]) -> int:
     return 0
 
 
+def _cmd_archives(archive: Archive, rest: list[str], cmd_filter: str | None) -> int:
+    """List recent archived sessions. Optional count arg + --ask/--comma filter."""
+    limit = _DEFAULT_ARCHIVES_LIMIT
+    if len(rest) > 1:
+        sys.stderr.write(f"{_RED}??? error:{_RESET} `--archives` takes at most one count\n")
+        return 2
+    if rest:
+        try:
+            limit = int(rest[0])
+        except ValueError:
+            sys.stderr.write(f"{_RED}??? error:{_RESET} `--archives` count must be an integer\n")
+            return 2
+        if limit <= 0:
+            sys.stderr.write(f"{_RED}??? error:{_RESET} `--archives` count must be positive\n")
+            return 2
+
+    hits = archive.recent(limit=limit, cmd_filter=cmd_filter)
+    if not hits:
+        scope = f" in `{cmd_filter}` sessions" if cmd_filter else ""
+        print(f"(no archived sessions{scope})")
+        return 0
+    for hit in hits:
+        sys.stdout.write(_format_archive_row(hit))
+    return 0
+
+
+def _cmd_show(archive: Archive, rest: list[str]) -> int:
+    """Print one archive's full transcript by id."""
+    if not rest:
+        sys.stderr.write(f"{_RED}??? error:{_RESET} `--show` needs an archive id\n")
+        return 2
+    if len(rest) > 1:
+        sys.stderr.write(f"{_RED}??? error:{_RESET} `--show` takes one id\n")
+        return 2
+    try:
+        archive_id = int(rest[0])
+    except ValueError:
+        sys.stderr.write(f"{_RED}??? error:{_RESET} id must be an integer\n")
+        return 2
+
+    hit = archive.get(archive_id)
+    if hit is None:
+        sys.stderr.write(f"{_RED}??? error:{_RESET} no archive with id {archive_id}\n")
+        return 2
+
+    when = datetime.fromtimestamp(hit.archived_at).strftime("%Y-%m-%d %H:%M:%S")
+    sys.stdout.write(
+        f"{_DIM}archive #{hit.id} · {hit.cmd} · {when} · "
+        f"{hit.turn_count} turns · {hit.last_pwd or '?'}{_RESET}\n\n"
+    )
+    sys.stdout.write(hit.content.strip() + "\n")
+    return 0
+
+
 def _collect_mode(argv: list[str]) -> tuple[str | None, int]:
     """Pull a single mode flag from ``argv``. Multi-mode → error code."""
     present = [f for f in _MODE_FLAGS if f in argv]
@@ -212,11 +293,13 @@ def main() -> int:
     memory = MemoryStore()
     archive = Archive()
 
-    # Filter flags only apply to recall paths. Combining with a mode
-    # flag is almost certainly a typo — facts and counts are global.
-    if cmd_filter is not None and mode is not None:
+    # Filter flags only apply to recall and to --archives (which is
+    # per-command browseable). Combining with a global-state mode is
+    # almost certainly a typo — facts and counts are global.
+    if cmd_filter is not None and mode in _GLOBAL_MODES:
         sys.stderr.write(
-            f"{_RED}??? error:{_RESET} filter flags only apply to recall, not `{mode}`\n"
+            f"{_RED}??? error:{_RESET} filter flags only apply to recall "
+            f"and --archives, not `{mode}`\n"
         )
         return 2
 
@@ -228,6 +311,10 @@ def main() -> int:
         return _cmd_drop(memory, argv)
     if mode == "--status":
         return _cmd_status(memory, archive, argv)
+    if mode == "--archives":
+        return _cmd_archives(archive, argv, cmd_filter)
+    if mode == "--show":
+        return _cmd_show(archive, argv)
 
     # No mode flag → recall path. Filter is optional.
     if not argv:

@@ -166,6 +166,22 @@ def test_expired_session_archives_to_recall(
     assert any(h.cmd == "comma" for h in hits)
 
 
+def test_resume_hint_writes_raw_ansi_not_rich_markup(
+    monkeypatch, capsys, isolated, fake_model, auto_pick
+):
+    """The "↻ refining" hint must reach the terminal as a real ANSI
+    sequence (starting with ESC), not the literal ``[2m`` text Rich's
+    Console.print would render after stripping the ESC byte."""
+
+    _run(["first"], monkeypatch)
+    capsys.readouterr()
+    _run(["second"], monkeypatch)
+    err = capsys.readouterr().err
+    # ESC byte must be present; literal "[2m[36m" never appears alone.
+    assert "\x1b[2m" in err or "\x1b[36m" in err
+    assert "↻ refining" in err
+
+
 def test_redirect_for_ask_remember(monkeypatch, capsys, isolated):
     """`,` doesn't share `?`'s deprecation hints — it has its own surface."""
 

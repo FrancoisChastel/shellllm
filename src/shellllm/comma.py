@@ -65,6 +65,19 @@ _RESET = "\x1b[0m"
 _err = Console(stderr=True)
 
 
+def _note(text: str) -> None:
+    """Dim-cyan one-liner straight to stderr.
+
+    We bypass Rich here because ``rich.Console.print`` strips embedded
+    ANSI escape characters as a safety measure (so untrusted strings
+    can't redirect the cursor). That's the right default for rendered
+    text, but our hint is fixed-content and we want the codes
+    interpreted by the terminal — so we write to stderr directly.
+    """
+    sys.stderr.write(f"{_DIM}{_CYAN}↻ {text}{_RESET}\n")
+    sys.stderr.flush()
+
+
 def _safe_embed(text: str) -> list[float] | None:
     try:
         return embed_text(text)
@@ -302,12 +315,12 @@ def main() -> int:
         return 2
 
     if expired:
-        _err.print(f"{_DIM}{_CYAN}↻ idle session expired — starting fresh{_RESET}")
+        _note("idle session expired — starting fresh")
 
     first_turn = session.is_empty()
     resumed = not first_turn
     if resumed:
-        _err.print(f"{_DIM}{_CYAN}↻ refining — turn {session.meta.turn_count + 1}{_RESET}")
+        _note(f"refining — turn {session.meta.turn_count + 1}")
 
     messages, new_history_with_user = _build_messages(
         session=session, prompt=prompt, first_turn=first_turn, resumed=resumed

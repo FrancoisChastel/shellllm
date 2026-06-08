@@ -196,6 +196,67 @@ class Archive:
             row = conn.execute("SELECT COUNT(*) FROM archives").fetchone()
             return int(row[0]) if row else 0
 
+    # ── Browse ---------------------------------------------------------
+
+    def recent(
+        self,
+        *,
+        limit: int = 20,
+        cmd_filter: str | None = None,
+    ) -> list[ArchiveHit]:
+        """Most-recent archives, no FTS query — for `??? --archives`.
+
+        Use this to browse what's been archived without a specific
+        recall query in mind. The snippet field is synthesized from
+        the head of the content (FTS5 ``snippet()`` is only available
+        on a MATCH expression).
+        """
+        sql = "SELECT id, archived_at, cmd, last_pwd, last_date, turn_count, content FROM archives"
+        params: list[Any] = []
+        if cmd_filter:
+            sql += " WHERE cmd = ?"
+            params.append(cmd_filter)
+        sql += " ORDER BY archived_at DESC LIMIT ?"
+        params.append(limit)
+
+        with self._conn() as conn:
+            rows = conn.execute(sql, params).fetchall()
+
+        return [
+            ArchiveHit(
+                id=int(r[0]),
+                archived_at=float(r[1]),
+                cmd=str(r[2]),
+                last_pwd=str(r[3] or ""),
+                last_date=str(r[4] or ""),
+                turn_count=int(r[5]),
+                content=str(r[6]),
+                snippet=_truncate_snippet(str(r[6])),
+            )
+            for r in rows
+        ]
+
+    def get(self, archive_id: int) -> ArchiveHit | None:
+        """Fetch one archive by id, or None — for `??? --show <id>`."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT id, archived_at, cmd, last_pwd, last_date, "
+                "turn_count, content FROM archives WHERE id = ?",
+                (archive_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return ArchiveHit(
+            id=int(row[0]),
+            archived_at=float(row[1]),
+            cmd=str(row[2]),
+            last_pwd=str(row[3] or ""),
+            last_date=str(row[4] or ""),
+            turn_count=int(row[5]),
+            content=str(row[6]),
+            snippet=_truncate_snippet(str(row[6])),
+        )
+
     # ── Searches -------------------------------------------------------
 
     def search(
