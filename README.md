@@ -45,8 +45,26 @@ exec zsh
 # 4. use it
 , find the five largest files under this directory
 ? in markdown, what does git stash do?
+? --remember I prefer ripgrep over grep
+? --recall ripgrep                # search past sessions
 ??? latest stable release of ripgrep and one notable change in it
 ```
+
+### Upgrading an existing install
+
+Both code paths track this repo as the source of truth:
+
+- **Source install (`pip install -e .` + `source zsh/shellllm.zsh`)** —
+  Python entry-points pick up edits automatically; the zsh helper does
+  too. After a `git pull` that changes `zsh/shellllm.zsh` you only need
+  to re-source it:
+  ```sh
+  exec zsh
+  ```
+- **Homebrew install** — bump the formula or wait for the next release.
+
+To activate semantic recall once the upgrade is in, follow the
+[Local embeddings](#local-embeddings) section.
 
 ## Tiers
 
@@ -110,6 +128,8 @@ Recall always works in **BM25-only mode** — no extra setup, no extra
 processes. Adding a local embedding server unlocks **hybrid
 semantic + BM25 search** (RRF-fused) so you find prior conversations
 by meaning, not just keywords.
+
+<a id="local-embeddings"></a>
 
 ### Local embeddings
 
