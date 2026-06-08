@@ -7,9 +7,9 @@
 Local-LLM zsh helpers.
 
 - **`, <english>`** — proposes 3–5 shell commands with one-line notes, you pick one in `fzf`, it lands on your prompt line via `print -z`. Never auto-executes.
-- **`? <question>`** — small read-only agent with three tools: `read_file` (gated by a filesystem hard wall), `web_search` (DuckDuckGo) and `fetch_url` (follow a result into its page, plain-text). Searches only when the model decides it needs to. Answer streams as live-rendered markdown.
-- **`??? <question>`** — same agent, web-first: always starts with a `web_search` and follows the best link with `fetch_url`. Use it when you want fresh facts, not the model's prior.
-- **`??`** — start (or stop / list / status) the local `llama-server` backend, with named tiers for speed-vs-quality.
+- **`? <question>`** — small read-only agent with three tools: `read_file` (gated by a filesystem hard wall), `web_search` (DuckDuckGo) and `fetch_url` (follow a result into its page, plain-text). Searches only when the model decides it needs to. Answer streams as live-rendered markdown. Each terminal pane keeps its own sticky conversation — follow-ups continue automatically until 30 min of idle (or `? --new`). `? --remember <fact>` pins long-term facts, `? --recall <q>` searches across past sessions.
+- **`??? <question>`** — same agent, web-first: always starts with a `web_search` and follows the best link with `fetch_url`. Use it when you want fresh facts, not the model's prior. Has its own per-pane session, distinct from `?`.
+- **`??`** — start (or stop / list / status) the local `llama-server` backend, with named tiers for speed-vs-quality. `?? --start-embed` boots a second `llama-server` in embedding mode for hybrid semantic recall.
 
 Runs against a local `llama-server`. No frontier model, no API key, works with wifi off.
 
@@ -65,6 +65,127 @@ huggingface-cli download unsloth/Qwen3-Coder-Next-GGUF
 
 `??` resolves the GGUF inside your HuggingFace cache automatically — no path config required.
 
+## Multi-turn
+
+Each terminal pane gets its own sticky conversation, one per command:
+
+```sh
+? what was that flag for ripgrep again
+? and how do I use it with json output
+? --history                # transcript of this pane's session
+? --new what's a good hash for cache keys     # start fresh
+? --reset                  # drop the current session
+? --compact                # force-compact older turns into a summary
+
+? --remember "I prefer ripgrep over grep"   # save a long-term fact
+? --memories               # list saved facts
+? --forget 2               # drop fact #2
+```
+
+The pane is identified from `TERM_SESSION_ID` (Terminal.app / iTerm),
+`TMUX_PANE`, or `WINDOWID` — whichever your terminal sets. After 30 min
+idle the session auto-rotates so a forgotten tab doesn't bleed stale
+context into the next turn.
+
+`?` and `???` keep **separate** threads in the same pane, so a web-first
+search doesn't mix with a local-knowledge answer. The long-term memory
+(`--remember`) is global — facts apply everywhere.
+
+When the conversation crosses ~80% of `SHELLLM_CTX`, older turns are
+auto-summarized into a single `<summary-so-far>` block using the same
+local model; the most recent 4 turns stay verbatim.
+
+## Cross-session recall
+
+Every expiring or `--new`'d session is flattened into a sqlite archive
+(`~/.cache/shellllm/archive.db`) so you can search across all your
+past panes and days:
+
+```sh
+? --recall ripgrep      # BM25 search across archived transcripts
+? --auto-recall what was that grep flag again    # inject top hits as context this turn
+```
+
+Recall always works in **BM25-only mode** — no extra setup, no extra
+processes. Adding a local embedding server unlocks **hybrid
+semantic + BM25 search** (RRF-fused) so you find prior conversations
+by meaning, not just keywords.
+
+### Local embeddings
+
+Start a second `llama-server` instance running in embedding mode on
+port 8081. Three tiers ship out of the box:
+
+| Tier | Model | Notes |
+| --- | --- | --- |
+| `tiny` | `Qwen/Qwen3-Embedding-0.6B-GGUF` | Same family as the chat tiers (default). |
+| `bge` | `ChristianAzinn/bge-small-en-v1.5-gguf` | Tiny English-only, very fast. |
+| `nomic` | `nomic-ai/nomic-embed-text-v1.5-GGUF` | Strong general-purpose retrieval. |
+
+```sh
+huggingface-cli download Qwen/Qwen3-Embedding-0.6B-GGUF
+?? --start-embed tiny       # starts on :8081
+?? --status-embed
+?? --list-embed
+?? --stop-embed
+```
+
+shellllm auto-detects the server via `SHELLLM_EMBED_URL`
+(`http://127.0.0.1:8081` by default). When it's reachable:
+
+- new archive rows get a normalized fp32 embedding written alongside
+  the FTS5 entry;
+- `--recall` and `--auto-recall` embed the query and add cosine-sim
+  candidates to the BM25 results, fused via Reciprocal Rank Fusion;
+- mismatched embedding dims (e.g. swapping the model later) are
+  silently skipped — old rows still serve BM25 hits.
+
+Auto-recall is opt-in:
+
+```sh
+export SHELLLM_AUTO_RECALL=1    # global on
+? --no-auto-recall <q>          # off for one call
+? --auto-recall <q>             # on for one call (overrides env)
+```
+
+## Optional: cross-session memory via claude-mem
+
+If you also use [claude-mem](https://github.com/thedotmack/claude-mem)
+in its server-beta mode, shellllm can write each turn as an
+observation and pull in relevant prior context on a fresh session.
+Nothing else changes; if the env vars aren't set, the integration is
+inert.
+
+```sh
+export CLAUDE_MEM_SERVER_BETA_URL="https://your-claude-mem-host"
+export CLAUDE_MEM_SERVER_BETA_API_KEY="..."
+export CLAUDE_MEM_SERVER_BETA_PROJECT_ID="..."
+```
+
+On first use in a process you'll see a one-line dim hint on stderr.
+What we do with those creds:
+
+- **Write**: every successful `?` / `???` turn becomes a
+  `shellllm-turn` observation; `? --remember <fact>` mirrors as a
+  `user-fact` observation. Writes are fire-and-forget on a daemon
+  thread — they never block your prompt and a network failure is
+  silently dropped.
+- **Read**: only on the first turn of a brand-new session, we hit
+  `/v1/context` with your question and inject the returned text as
+  a `<claude-mem-context>` system block.
+
+Controls:
+
+| Knob | What it does |
+| --- | --- |
+| `SHELLLM_CLAUDE_MEM=0` | Force-disable even when configured |
+| `? --no-mem <q>` | Skip integration for one call |
+| `? --mem <q>` | Re-enable for one call (overrides env opt-out) |
+
+shellllm's local `--remember` list (`~/.cache/shellllm/memory.jsonl`)
+stays the source of truth for offline use; claude-mem just gets a
+copy.
+
 ## Architecture
 
 ```
@@ -72,10 +193,23 @@ src/shellllm/
 ├── safe_fs.py    filesystem hard wall — $HOME/$PWD + inside-HOME denylist
 ├── client.py     llama-server HTTP client (one-shot + streaming)
 ├── comma.py      ,    — JSON-schema → fzf picker → stdout
-├── ask.py        ?    — streaming agent loop, live markdown render
+├── ask.py        ?    — streaming agent loop, live markdown render, CLI dispatch
 ├── search.py     ???  — same loop, web-search-first system prompt
+├── session.py    per-pane conversation persistence (JSONL + idle TTL)
+├── memory.py     long-term facts behind `--remember` / `--memories`
+├── compact.py    summary-buffer compaction over the same local model
+├── context.py    date/OS/timezone prelude (re-injected on PWD/date change)
+├── archive.py    sqlite FTS5 + optional embeddings for cross-session --recall
+├── embed.py      client for a local llama-server in --embedding mode
+├── claude_mem.py optional adapter for claude-mem server-beta (observations + context)
 └── web.py        stdlib DuckDuckGo scraper + fetch_url with SSRF guard
 tests/test_safe_fs.py   filesystem-wall coverage
+tests/test_session.py   TTY id + TTL rotation + JSONL round-trip
+tests/test_memory.py    fact store + size cap + archive overflow
+tests/test_compact.py   compaction preserves turn boundaries
+tests/test_archive.py   FTS5 + cosine recall, RRF fusion, dim-mismatch tolerance
+tests/test_embed.py     embedding client + pack/unpack + cosine helpers
+tests/test_claude_mem.py adapter gating + payload shape + error swallowing
 tests/test_web.py       URL safety + HTML extraction
 zsh/shellllm.zsh        function ,  + aliases ? , ?? , ???
 .github/workflows/ci.yml  ruff + pytest on push & PR
@@ -93,7 +227,7 @@ Every file read goes through `safe_fs.safe_read`. Four rules, all enforced:
 Reads cap at 1 MB and use `O_NOFOLLOW` on the final component as a belt against a resolve-then-open symlink race.
 
 ```sh
-pytest -v   # 38 tests covering symlinks, traversal, denylist, lookalikes, truncation
+pytest -v   # 144 tests; safe_fs alone covers symlinks, traversal, denylist, lookalikes, truncation
 ```
 
 ## What's deliberately not built
@@ -112,6 +246,18 @@ pytest -v   # 38 tests covering symlinks, traversal, denylist, lookalikes, trunc
 | `SHELLLM_CTX` | `32768` | context window (tokens) |
 | `SHELLLM_LOG` | `~/.cache/shellllm/llama-server.log` | server log path |
 | `SHELLLM_TIMEOUT` | `120` | HTTP timeout (seconds) |
+| `SHELLLM_EMBED_URL` | `http://127.0.0.1:8081` | local embedding server endpoint |
+| `SHELLLM_EMBED_MODEL` | `local-embed` | model name passed to `/v1/embeddings` |
+| `SHELLLM_EMBED_TIMEOUT` | `8` | embedding HTTP timeout (seconds) |
+| `SHELLLM_EMBED_PORT` | `8081` | port `?? --start-embed` binds to |
+| `SHELLLM_EMBED_CTX` | `2048` | context window for the embedding server |
+| `SHELLLM_EMBED_LOG` | `~/.cache/shellllm/llama-embed.log` | embedding-server log path |
+| `SHELLLM_ARCHIVE_DB` | `~/.cache/shellllm/archive.db` | sqlite archive of expired sessions |
+| `SHELLLM_AUTO_RECALL` | unset | set to `1` to auto-inject archive hits on first-turn questions |
+| `SHELLLM_CLAUDE_MEM` | unset (auto) | set to `0` to disable claude-mem integration even when configured |
+| `CLAUDE_MEM_SERVER_BETA_URL` | — | claude-mem server-beta base URL (enables integration) |
+| `CLAUDE_MEM_SERVER_BETA_API_KEY` | — | bearer token for claude-mem server-beta |
+| `CLAUDE_MEM_SERVER_BETA_PROJECT_ID` | — | project id observations are scoped to |
 
 ## Development
 
