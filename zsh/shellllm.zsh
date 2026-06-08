@@ -7,8 +7,7 @@
 
 : ${SHELLLM_COMMA:=shellllm-comma}
 : ${SHELLLM_ASK:=shellllm-ask}
-: ${SHELLLM_SEARCH:=shellllm-search}
-: ${SHELLLM_STATE:=shellllm-state}
+: ${SHELLLM_RECALL:=shellllm-recall}
 : ${SHELLLM_PORT:=8080}
 : ${SHELLLM_EMBED_PORT:=8081}
 : ${SHELLLM_EMBED_CTX:=2048}
@@ -75,28 +74,23 @@ function _shellllm_ask_fn() {
 }
 alias '?'='noglob _shellllm_ask_fn'
 
-# ─── `???` — answer by searching the web first. Same noglob requirement.
-function _shellllm_search_fn() {
-  ${=SHELLLM_SEARCH} "$@"
-}
-alias '???'='noglob _shellllm_search_fn'
-
-# ─── `?:` — long-term facts + cross-session recall.
-#   ?: add <fact>     pin a fact
-#   ?: list           list facts
-#   ?: drop <n>       remove fact #n
-#   ?: recall <query> search archived sessions
-#   ?: status         counts
-#   ?: help           usage
+# ─── `???` — memory layer: long-term facts + cross-session recall.
 #
-# `?` is a zsh glob char; `:` is the no-op builtin name. Aliasing the
-# combined `?:` token works because alias expansion runs before
-# globbing and command lookup. `noglob` keeps the `?` from being
-# eagerly globbed in the args.
-function _shellllm_state_fn() {
-  ${=SHELLLM_STATE} "$@"
+#   ??? <q>             bare query → search archived sessions
+#   ??? add <fact>      pin a long-term fact
+#   ??? list            list facts
+#   ??? drop <n>        drop fact #n
+#   ??? recall <q>      explicit recall (use when the query starts with
+#                       a word that's also a subcommand)
+#   ??? status          counts
+#   ??? help            usage
+#
+# `noglob` is needed because `?` is a zsh glob char; aliasing `???`
+# directly is fine because alias expansion runs before globbing.
+function _shellllm_recall_fn() {
+  ${=SHELLLM_RECALL} "$@"
 }
-alias '?:'='noglob _shellllm_state_fn'
+alias '???'='noglob _shellllm_recall_fn'
 
 # ─── server helpers ─────────────────────────────────────────────────────
 

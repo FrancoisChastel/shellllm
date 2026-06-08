@@ -133,6 +133,20 @@ ASK_SYSTEM = (
     "`WallViolation`), respect the refusal and reason from what you have."
 )
 
+# Used when the user passes ``--web`` / ``-w``. Same agent, same tools;
+# just a stronger nudge so the very first action is a web search.
+ASK_WEB_SYSTEM = (
+    "You answer the user's question by searching the web. Start every "
+    "response by calling `web_search` with a focused query derived from "
+    "the question. If a result clearly contains the answer, follow it by "
+    "calling `fetch_url` on its URL to read the page in full — don't "
+    "answer from snippets alone when a fetch would give you the real "
+    "content. You also have `read_file` for files in $HOME or $PWD if "
+    "useful. Write a concise markdown answer and cite the URLs you used "
+    "as a short list at the end. If a tool refuses, reason from what you "
+    "have."
+)
+
 # Back-compat alias for any external importers.
 SYSTEM = ASK_SYSTEM
 
@@ -496,43 +510,18 @@ def _print_usage(label: str, *, to: Any = None) -> None:
     out = to or sys.stdout
     out.write(
         f"usage: {label} <question>\n"
+        f"       {label} --web <question>          force web-first this turn\n"
         f"       {label} --new <question>          start a fresh session\n"
         f"       {label} --reset                   drop current session\n"
         f"       {label} --history                 print session transcript\n"
         f"       {label} --compact                 force compaction\n"
-        f"       {label} --auto-recall <q>         inject archive hits as context this turn\n"
-        f"       {label} --no-auto-recall <q>     skip recall this turn (override env)\n"
-        f"       {label} --mem | --no-mem         force claude-mem on/off for this call\n"
+        f"       {label} --auto-recall <q>         inject archive hits as context\n"
+        f"       {label} --no-auto-recall <q>      skip recall this turn\n"
+        f"       {label} --mem | --no-mem          force claude-mem on/off for this call\n"
         f"       {label} --help                    show this message\n"
         f"\n"
-        f"For facts and cross-session recall, see `?: help`.\n"
+        f"For facts and cross-session recall, see `??? help`.\n"
     )
-
-
-# Flags that used to live on `?` / `???` and have moved to `?:`. We keep
-# matching them so a stale muscle-memory invocation gets a clear redirect
-# instead of falling through to the model as a regular question.
-_MOVED_FLAGS: dict[str, str] = {
-    "--remember": "?: add <fact>",
-    "--memories": "?: list",
-    "--forget": "?: drop <n>",
-    "--recall": "?: recall <query>",
-}
-
-
-def _check_moved_flag(args: list[str], err_label: str) -> int | None:
-    """Return an exit code if any deprecated flag is present, else None.
-
-    We do this *first* so the redirect fires before we try to parse the
-    remaining args as a prompt.
-    """
-    for flag, new in _MOVED_FLAGS.items():
-        if flag in args:
-            sys.stderr.write(
-                f"{_RED}{err_label} error:{_RESET} `{flag}` moved — use `{new}` instead.\n"
-            )
-            return 2
-    return None
 
 
 def _print_history(session: SessionStore) -> None:
@@ -581,9 +570,12 @@ def run_cli(
         _print_usage(err_label)
         return 0
 
-    moved = _check_moved_flag(args, err_label)
-    if moved is not None:
-        return moved
+    # --web / -w flips the system prompt to web-first for this single
+    # turn. The agent loop is otherwise unchanged; the session stays
+    # tagged cmd="ask" so web-forced turns mix with local-knowledge
+    # ones in the same per-pane thread.
+    if _consume_flag("--web") or _consume_flag("-w"):
+        system = ASK_WEB_SYSTEM
 
     # --mem / --no-mem force the claude-mem integration on or off for
     # this invocation, overriding env vars.
