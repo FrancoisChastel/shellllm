@@ -497,18 +497,42 @@ def _print_usage(label: str, *, to: Any = None) -> None:
     out.write(
         f"usage: {label} <question>\n"
         f"       {label} --new <question>          start a fresh session\n"
-        f"       {label} --reset                    drop current session\n"
-        f"       {label} --history                  print session transcript\n"
-        f"       {label} --compact                  force compaction\n"
-        f"       {label} --remember '<fact>'        save long-term fact\n"
-        f"       {label} --memories                 list saved facts\n"
-        f"       {label} --forget <n>               drop fact #n\n"
-        f"       {label} --recall '<query>'         search archived sessions\n"
-        f"       {label} --auto-recall <question>   inject archive hits as context this turn\n"
-        f"       {label} --no-auto-recall <q>       skip recall this turn (override env)\n"
-        f"       {label} --mem | --no-mem           force claude-mem on/off for this call\n"
-        f"       {label} --help                     show this message\n"
+        f"       {label} --reset                   drop current session\n"
+        f"       {label} --history                 print session transcript\n"
+        f"       {label} --compact                 force compaction\n"
+        f"       {label} --auto-recall <q>         inject archive hits as context this turn\n"
+        f"       {label} --no-auto-recall <q>     skip recall this turn (override env)\n"
+        f"       {label} --mem | --no-mem         force claude-mem on/off for this call\n"
+        f"       {label} --help                    show this message\n"
+        f"\n"
+        f"For facts and cross-session recall, see `?: help`.\n"
     )
+
+
+# Flags that used to live on `?` / `???` and have moved to `?:`. We keep
+# matching them so a stale muscle-memory invocation gets a clear redirect
+# instead of falling through to the model as a regular question.
+_MOVED_FLAGS: dict[str, str] = {
+    "--remember": "?: add <fact>",
+    "--memories": "?: list",
+    "--forget": "?: drop <n>",
+    "--recall": "?: recall <query>",
+}
+
+
+def _check_moved_flag(args: list[str], err_label: str) -> int | None:
+    """Return an exit code if any deprecated flag is present, else None.
+
+    We do this *first* so the redirect fires before we try to parse the
+    remaining args as a prompt.
+    """
+    for flag, new in _MOVED_FLAGS.items():
+        if flag in args:
+            sys.stderr.write(
+                f"{_RED}{err_label} error:{_RESET} `{flag}` moved — use `{new}` instead.\n"
+            )
+            return 2
+    return None
 
 
 def _print_history(session: SessionStore) -> None:
@@ -553,32 +577,13 @@ def run_cli(
             return True
         return False
 
-    def _consume_value(flag: str) -> str | None:
-        if flag in args:
-            i = args.index(flag)
-            if i + 1 < len(args):
-                value = args[i + 1]
-                del args[i : i + 2]
-                return value
-            del args[i]
-        return None
-
-    def _consume_tail(flag: str) -> str | None:
-        """Consume the flag and everything after it as a single string.
-
-        Used for ``--remember`` so ``? --remember the project uses python``
-        works without forcing the user to quote the fact.
-        """
-        if flag in args:
-            i = args.index(flag)
-            tail = args[i + 1 :]
-            del args[i:]
-            return " ".join(tail).strip() if tail else ""
-        return None
-
     if _consume_flag("--help") or _consume_flag("-h"):
         _print_usage(err_label)
         return 0
+
+    moved = _check_moved_flag(args, err_label)
+    if moved is not None:
+        return moved
 
     # --mem / --no-mem force the claude-mem integration on or off for
     # this invocation, overriding env vars.
@@ -608,20 +613,6 @@ def run_cli(
         print(f"{cmd} session reset.")
         return 0
 
-    recall_query = _consume_tail("--recall")
-    if recall_query is not None:
-        if not recall_query:
-            sys.stderr.write(f"{_RED}{cmd} error:{_RESET} --recall needs a query\n")
-            return 2
-        query_vec = _safe_embed(recall_query)
-        hits = archive.search(recall_query, limit=10, query_embedding=query_vec)
-        if not hits:
-            print(f"(no archive hits for {recall_query!r})")
-            return 0
-        for i, hit in enumerate(hits, 1):
-            sys.stdout.write(_format_recall_hit(i, hit))
-        return 0
-
     if _consume_flag("--history"):
         _print_history(session)
         return 0
@@ -638,46 +629,6 @@ def run_cli(
             f"{report.before_tokens}→{report.after_tokens} tokens "
             f"(triggered={report.triggered})"
         )
-        return 0
-
-    fact = _consume_tail("--remember")
-    if fact is not None:
-        try:
-            stored = memory.add(fact)
-        except ValueError as exc:
-            sys.stderr.write(f"{_RED}{cmd} error:{_RESET} {exc}\n")
-            return 2
-        # Mirror to claude-mem as a long-lived user-fact observation.
-        # Local JSONL stays the source of truth for offline use.
-        claude_mem.record_observation_async(
-            stored.text,
-            kind="user-fact",
-            metadata={"source": "shellllm --remember"},
-        )
-        print(f"remembered: {stored.text}")
-        return 0
-
-    if _consume_flag("--memories"):
-        facts = memory.load()
-        if not facts:
-            print("(no remembered facts)")
-            return 0
-        for i, f in enumerate(facts, 1):
-            print(f"{i:>2}. {f.text}")
-        return 0
-
-    forget_value = _consume_value("--forget")
-    if forget_value is not None:
-        try:
-            idx = int(forget_value)
-        except ValueError:
-            sys.stderr.write(f"{_RED}{cmd} error:{_RESET} --forget needs an integer index\n")
-            return 2
-        removed = memory.forget(idx)
-        if removed is None:
-            sys.stderr.write(f"{_RED}{cmd} error:{_RESET} no fact at index {idx}\n")
-            return 2
-        print(f"forgot: {removed.text}")
         return 0
 
     new_session_requested = _consume_flag("--new")

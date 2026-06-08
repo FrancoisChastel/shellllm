@@ -6,9 +6,10 @@
 
 Local-LLM zsh helpers.
 
-- **`, <english>`** — proposes 3–5 shell commands with one-line notes, you pick one in `fzf`, it lands on your prompt line via `print -z`. Never auto-executes.
-- **`? <question>`** — small read-only agent with three tools: `read_file` (gated by a filesystem hard wall), `web_search` (DuckDuckGo) and `fetch_url` (follow a result into its page, plain-text). Searches only when the model decides it needs to. Answer streams as live-rendered markdown. Each terminal pane keeps its own sticky conversation — follow-ups continue automatically until 30 min of idle (or `? --new`). `? --remember <fact>` pins long-term facts, `? --recall <q>` searches across past sessions.
+- **`, <english>`** — proposes 3–5 shell commands with one-line notes, you pick one in `fzf`, it lands on your prompt line via `print -z`. Never auto-executes. Sticky per-pane session so follow-ups refine the prior list (`, the same but only the running ones`).
+- **`? <question>`** — small read-only agent with three tools: `read_file` (gated by a filesystem hard wall), `web_search` (DuckDuckGo) and `fetch_url` (follow a result into its page, plain-text). Searches only when the model decides it needs to. Answer streams as live-rendered markdown. Each terminal pane keeps its own sticky conversation — follow-ups continue automatically until 30 min of idle (or `? --new`).
 - **`??? <question>`** — same agent, web-first: always starts with a `web_search` and follows the best link with `fetch_url`. Use it when you want fresh facts, not the model's prior. Has its own per-pane session, distinct from `?`.
+- **`?: <subcommand>`** — long-term facts and cross-session recall. `?: add <fact>`, `?: list`, `?: drop <n>`, `?: recall <query>`, `?: status`. Lives outside the asking commands so `?` and `,` stay ask-only.
 - **`??`** — start (or stop / list / status) the local `llama-server` backend, with named tiers for speed-vs-quality. `?? --start-embed` boots a second `llama-server` in embedding mode for hybrid semantic recall.
 
 Runs against a local `llama-server`. No frontier model, no API key, works with wifi off.
@@ -44,9 +45,10 @@ exec zsh
 
 # 4. use it
 , find the five largest files under this directory
+, the same but only ones modified today        # refines the prior , — sticky session
 ? in markdown, what does git stash do?
-? --remember I prefer ripgrep over grep
-? --recall ripgrep                # search past sessions
+?: add I prefer ripgrep over grep             # long-term fact, used by all asks
+?: recall ripgrep                              # search past sessions across panes
 ??? latest stable release of ripgrep and one notable change in it
 ```
 
@@ -83,9 +85,11 @@ huggingface-cli download unsloth/Qwen3-Coder-Next-GGUF
 
 `??` resolves the GGUF inside your HuggingFace cache automatically — no path config required.
 
-## Multi-turn
+## Sessions
 
-Each terminal pane gets its own sticky conversation, one per command:
+Each terminal pane gets its own sticky conversation, one per asking
+command. `?`, `???`, and `,` each keep their own thread so a refining
+`,` doesn't pollute the Q&A you were having with `?`.
 
 ```sh
 ? what was that flag for ripgrep again
@@ -95,9 +99,9 @@ Each terminal pane gets its own sticky conversation, one per command:
 ? --reset                  # drop the current session
 ? --compact                # force-compact older turns into a summary
 
-? --remember "I prefer ripgrep over grep"   # save a long-term fact
-? --memories               # list saved facts
-? --forget 2               # drop fact #2
+, list all docker containers
+, the same but only the running ones    # refines the prior `,` proposal
+, --new find the largest files          # starts a fresh `,` thread
 ```
 
 The pane is identified from `TERM_SESSION_ID` (Terminal.app / iTerm),
@@ -105,24 +109,30 @@ The pane is identified from `TERM_SESSION_ID` (Terminal.app / iTerm),
 idle the session auto-rotates so a forgotten tab doesn't bleed stale
 context into the next turn.
 
-`?` and `???` keep **separate** threads in the same pane, so a web-first
-search doesn't mix with a local-knowledge answer. The long-term memory
-(`--remember`) is global — facts apply everywhere.
-
 When the conversation crosses ~80% of `SHELLLM_CTX`, older turns are
 auto-summarized into a single `<summary-so-far>` block using the same
 local model; the most recent 4 turns stay verbatim.
 
-## Cross-session recall
+## `?:` — facts and recall
 
-Every expiring or `--new`'d session is flattened into a sqlite archive
-(`~/.cache/shellllm/archive.db`) so you can search across all your
-past panes and days:
+Everything that *isn't* "ask a question" or "propose a command" lives
+under one meta verb so `?` and `,` stay clean. `?:` is your durable
+layer.
 
 ```sh
-? --recall ripgrep      # BM25 search across archived transcripts
-? --auto-recall what was that grep flag again    # inject top hits as context this turn
+?: add I prefer ripgrep over grep    # pin a long-term fact
+?: list                              # see them
+?: drop 2                            # remove fact #2
+?: recall ripgrep                    # search archived sessions
+?: status                            # counts: facts + archives
+?: help
 ```
+
+Long-term facts get injected at the top of every `?` / `???` system
+prompt, so the agent stops asking you things you've already told it.
+Recall works against `~/.cache/shellllm/archive.db`, populated
+automatically whenever a session expires or you call `--new` / `--reset`
+on any asking command.
 
 Recall always works in **BM25-only mode** — no extra setup, no extra
 processes. Adding a local embedding server unlocks **hybrid
@@ -155,7 +165,7 @@ shellllm auto-detects the server via `SHELLLM_EMBED_URL`
 
 - new archive rows get a normalized fp32 embedding written alongside
   the FTS5 entry;
-- `--recall` and `--auto-recall` embed the query and add cosine-sim
+- `?: recall` and `? --auto-recall` embed the query and add cosine-sim
   candidates to the BM25 results, fused via Reciprocal Rank Fusion;
 - mismatched embedding dims (e.g. swapping the model later) are
   silently skipped — old rows still serve BM25 hits.
@@ -215,22 +225,25 @@ src/shellllm/
 ├── comma.py      ,    — JSON-schema → fzf picker → stdout
 ├── ask.py        ?    — streaming agent loop, live markdown render, CLI dispatch
 ├── search.py     ???  — same loop, web-search-first system prompt
+├── state.py      ?:   — long-term facts + cross-session recall subcommands
 ├── session.py    per-pane conversation persistence (JSONL + idle TTL)
-├── memory.py     long-term facts behind `--remember` / `--memories`
+├── memory.py     long-term fact store backing `?: add` / `?: list`
 ├── compact.py    summary-buffer compaction over the same local model
 ├── context.py    date/OS/timezone prelude (re-injected on PWD/date change)
-├── archive.py    sqlite FTS5 + optional embeddings for cross-session --recall
+├── archive.py    sqlite FTS5 + optional embeddings for `?: recall`
 ├── embed.py      client for a local llama-server in --embedding mode
 ├── claude_mem.py optional adapter for claude-mem server-beta (observations + context)
 └── web.py        stdlib DuckDuckGo scraper + fetch_url with SSRF guard
-tests/test_safe_fs.py   filesystem-wall coverage
-tests/test_session.py   TTY id + TTL rotation + JSONL round-trip
-tests/test_memory.py    fact store + size cap + archive overflow
-tests/test_compact.py   compaction preserves turn boundaries
-tests/test_archive.py   FTS5 + cosine recall, RRF fusion, dim-mismatch tolerance
-tests/test_embed.py     embedding client + pack/unpack + cosine helpers
-tests/test_claude_mem.py adapter gating + payload shape + error swallowing
-tests/test_web.py       URL safety + HTML extraction
+tests/test_safe_fs.py        filesystem-wall coverage
+tests/test_session.py        TTY id + TTL rotation + JSONL round-trip
+tests/test_memory.py         fact store + size cap + archive overflow
+tests/test_compact.py        compaction preserves turn boundaries
+tests/test_archive.py        FTS5 + cosine recall, RRF fusion, dim-mismatch tolerance
+tests/test_embed.py          embedding client + pack/unpack + cosine helpers
+tests/test_state.py          ?: subcommands happy + sad paths
+tests/test_comma_session.py  , refines across turns; archive on TTL
+tests/test_claude_mem.py     adapter gating + payload shape + error swallowing
+tests/test_web.py            URL safety + HTML extraction
 zsh/shellllm.zsh        function ,  + aliases ? , ?? , ???
 .github/workflows/ci.yml  ruff + pytest on push & PR
 ```
@@ -247,7 +260,7 @@ Every file read goes through `safe_fs.safe_read`. Four rules, all enforced:
 Reads cap at 1 MB and use `O_NOFOLLOW` on the final component as a belt against a resolve-then-open symlink race.
 
 ```sh
-pytest -v   # 144 tests; safe_fs alone covers symlinks, traversal, denylist, lookalikes, truncation
+pytest -v   # 168 tests; safe_fs alone covers symlinks, traversal, denylist, lookalikes, truncation
 ```
 
 ## What's deliberately not built

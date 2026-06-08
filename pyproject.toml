@@ -36,6 +36,7 @@ dev = [
 shellllm-comma = "shellllm.comma:main"
 shellllm-ask = "shellllm.ask:main"
 shellllm-search = "shellllm.search:main"
+shellllm-state = "shellllm.state:main"
 
 [project.urls]
 Homepage = "https://github.com/FrancoisChastel/shellllm"
