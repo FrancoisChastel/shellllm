@@ -153,14 +153,20 @@ pytest -v   # 197 tests; 38 dedicated to symlinks, traversal, denylist, lookalik
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `SHELLLM_BASE_URL` | `http://127.0.0.1:8080` | llama-server endpoint |
+| `SHELLLM_BASE_URL` | `http://127.0.0.1:8080` | llama-server (or hosted) endpoint |
+| `SHELLLM_API_KEY` | — | Bearer auth for chat — set when pointing at a hosted API |
+| `SHELLLM_MODEL` | `local` | Model id passed in chat requests (override per provider) |
 | `SHELLLM_PORT` | `8080` | Server port |
 | `SHELLLM_NGL` | `99` | GPU offload layers |
 | `SHELLLM_CTX` | `32768` | Context window (tokens) |
 | `SHELLLM_TIMEOUT` | `120` | HTTP timeout (seconds) |
 | `SHELLLM_LLAMA_MODEL` | — | Explicit GGUF path, overrides tier |
 | `SHELLLM_LOG` | `~/.cache/shellllm/llama-server.log` | Server log path |
-| `SHELLLM_EMBED_URL` | `http://127.0.0.1:8081` | Local embedding server endpoint |
+| `SHELLLM_RENDER_URL` | — | Firecrawl-compatible JS-render endpoint (enables) |
+| `SHELLLM_RENDER_API_KEY` | — | Bearer auth for the render service |
+| `SHELLLM_RENDER_TIMEOUT` | `30` | Render-service HTTP timeout (seconds) |
+| `SHELLLM_EMBED_URL` | `http://127.0.0.1:8081` | Local (or hosted) embedding endpoint |
+| `SHELLLM_EMBED_API_KEY` | — | Bearer auth for embeddings (falls back to `SHELLLM_API_KEY`) |
 | `SHELLLM_EMBED_PORT` | `8081` | Embedding server port |
 | `SHELLLM_EMBED_CTX` | `2048` | Embedding context window |
 | `SHELLLM_EMBED_MODEL` | `local-embed` | Model name passed to `/v1/embeddings` |
@@ -192,10 +198,53 @@ You don't need to ship every "what does git stash do" question to a frontier mod
 
 The bet: a local 27B model is roughly equivalent to a frontier model for the questions you ask between `git commit` and `make test`. The wins — privacy, latency, offline availability, $0 per question — are real, every day.
 
+## Use a hosted API instead of llama-server
+
+shellllm's chat and embedding paths are both OpenAI-compatible. Point them at any provider, BYOK:
+
+```sh
+# OpenAI
+export SHELLLM_BASE_URL="https://api.openai.com"
+export SHELLLM_API_KEY="sk-..."
+export SHELLLM_MODEL="gpt-4o-mini"
+
+# OpenRouter
+export SHELLLM_BASE_URL="https://openrouter.ai/api"
+export SHELLLM_API_KEY="sk-or-..."
+export SHELLLM_MODEL="anthropic/claude-3.5-sonnet"
+
+# Groq (very fast)
+export SHELLLM_BASE_URL="https://api.groq.com/openai"
+export SHELLLM_API_KEY="gsk-..."
+export SHELLLM_MODEL="llama-3.3-70b-versatile"
+```
+
+When `SHELLLM_API_KEY` is set, every chat request carries `Authorization: Bearer …`. Without it, requests stay anonymous (which is what the local `llama-server` wants). The same fall-through applies to embeddings: set `SHELLLM_EMBED_API_KEY` for a separate provider, or let it inherit `SHELLLM_API_KEY` when both endpoints share auth.
+
+Mix and match: local chat + hosted embeddings, hosted chat + local embeddings, or both hosted. The model decides; shellllm just plumbs.
+
+## JS rendering for `fetch_url`
+
+Static HTML works for most pages. SPAs (React/Vue/Svelte sites that paint after the initial response) come back empty. To handle them, point `fetch_url` at a Firecrawl-compatible scraper — hosted or self-hosted:
+
+```sh
+# Hosted: https://firecrawl.dev
+export SHELLLM_RENDER_URL="https://api.firecrawl.dev"
+export SHELLLM_RENDER_API_KEY="fc-..."
+
+# Self-hosted: https://github.com/mendableai/firecrawl
+export SHELLLM_RENDER_URL="http://localhost:3002"
+export SHELLLM_RENDER_API_KEY="any-string-if-disabled"
+```
+
+When configured, every `fetch_url` call tries `POST {url}/v1/scrape` first (Bearer auth, asks for markdown). On any failure — connection refused, 4xx/5xx, timeout — it falls back transparently to the static fetcher. Without the env vars, behavior is unchanged.
+
+Any service speaking the same `/v1/scrape` shape works. Other vendors can be bridged with a tiny proxy that translates between their API and Firecrawl's.
+
 ## What's deliberately not built
 
 - **GBNF prefix grammar for `,`.** JSON schema is enough for v1; the system prompt forbids the obvious destructive commands.
-- **JS rendering for `fetch_url`.** Pages are fetched as static HTML and reduced to text — SPAs that need JS to populate content will look empty.
+- **Local browser-based JS rendering.** Skipped on purpose — a 300MB Chromium dependency doesn't match the offline-by-default story. The BYOK `SHELLLM_RENDER_URL` path above is the supported alternative.
 
 ## Development
 
@@ -218,8 +267,9 @@ src/shellllm/
 ├── embed.py         client for a local llama-server in --embedding mode
 ├── compact.py       summary-buffer compaction over the same local model
 ├── claude_mem.py    optional adapter for claude-mem server-beta
+├── render.py        optional Firecrawl-compatible JS renderer for fetch_url
 ├── safe_fs.py       filesystem hard wall
-├── client.py        llama-server HTTP client (one-shot + streaming)
+├── client.py        OpenAI-compatible chat HTTP client (Bearer auth opt-in)
 ├── context.py       date/OS/timezone prelude
 └── web.py           stdlib DuckDuckGo scraper + fetch_url with SSRF guard
 ```

@@ -26,11 +26,29 @@ import httpx
 DEFAULT_EMBED_URL = os.environ.get("SHELLLM_EMBED_URL", "http://127.0.0.1:8081")
 DEFAULT_EMBED_MODEL = os.environ.get("SHELLLM_EMBED_MODEL", "local-embed")
 DEFAULT_TIMEOUT = float(os.environ.get("SHELLLM_EMBED_TIMEOUT", "8"))
+EMBED_API_KEY_ENV = "SHELLLM_EMBED_API_KEY"
+FALLBACK_API_KEY_ENV = "SHELLLM_API_KEY"
 
 
 # Lazy `os.environ.get` re-read so tests can monkeypatch the var.
 def _base_url() -> str:
     return os.environ.get("SHELLLM_EMBED_URL", DEFAULT_EMBED_URL).rstrip("/")
+
+
+def _auth_headers() -> dict[str, str]:
+    """Bearer auth for hosted embedding endpoints.
+
+    ``SHELLLM_EMBED_API_KEY`` takes precedence; if unset we fall back to
+    ``SHELLLM_API_KEY`` so a single key powers chat + embeddings against
+    the same provider. The local llama-server doesn't need either.
+    """
+    headers = {"Content-Type": "application/json"}
+    key = os.environ.get(EMBED_API_KEY_ENV, "").strip()
+    if not key:
+        key = os.environ.get(FALLBACK_API_KEY_ENV, "").strip()
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    return headers
 
 
 def normalize(vec: list[float]) -> list[float]:
@@ -85,7 +103,7 @@ def embed(
     url = f"{(base_url or _base_url()).rstrip('/')}/v1/embeddings"
     payload = {"model": model, "input": body}
     try:
-        r = httpx.post(url, json=payload, timeout=timeout)
+        r = httpx.post(url, json=payload, headers=_auth_headers(), timeout=timeout)
         r.raise_for_status()
         data = r.json()
     except Exception:  # noqa: BLE001 — embedding is best-effort

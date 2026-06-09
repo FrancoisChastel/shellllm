@@ -71,8 +71,8 @@ def test_cosine_zero_vector_returns_zero():
 def test_embed_posts_to_server_and_normalizes(monkeypatch):
     captured: list[dict[str, Any]] = []
 
-    def fake_post(url, *, json, timeout):  # noqa: A002
-        captured.append({"url": url, "json": json, "timeout": timeout})
+    def fake_post(url, *, json, headers=None, timeout):  # noqa: A002
+        captured.append({"url": url, "json": json, "headers": headers or {}, "timeout": timeout})
         return FakeResponse(body={"data": [{"embedding": [3.0, 4.0]}]})
 
     monkeypatch.setenv("SHELLLM_EMBED_URL", "http://embed.test")

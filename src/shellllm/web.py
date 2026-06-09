@@ -293,7 +293,22 @@ def fetch_url(
 
 
 def fetch_url_as_text(url: str, *, max_chars: int = FETCH_MAX_CHARS) -> str:
-    """LLM-tool-friendly wrapper: never raises, always returns text."""
+    """LLM-tool-friendly wrapper: never raises, always returns text.
+
+    When ``SHELLLM_RENDER_URL`` + ``SHELLLM_RENDER_API_KEY`` are set, we
+    try the JS-rendering service first and fall back to the static
+    HTML fetcher on any failure. This lets the agent read SPA-rendered
+    pages (React/Vue/Svelte sites that paint after the initial HTML)
+    without forcing a heavy local browser install.
+    """
+    from . import render
+
+    rendered = render.render_url(url)
+    if rendered:
+        if len(rendered) > max_chars:
+            rendered = rendered[:max_chars] + f"\n\n(truncated at {max_chars} chars)"
+        return rendered
+
     try:
         body = fetch_url(url)
     except FetchError as exc:
