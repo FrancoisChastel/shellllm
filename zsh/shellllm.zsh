@@ -7,7 +7,7 @@
 
 : ${SHELLLM_COMMA:=shellllm-comma}
 : ${SHELLLM_ASK:=shellllm-ask}
-: ${SHELLLM_SEARCH:=shellllm-search}
+: ${SHELLLM_RECALL:=shellllm-recall}
 : ${SHELLLM_PORT:=8080}
 : ${SHELLLM_EMBED_PORT:=8081}
 : ${SHELLLM_EMBED_CTX:=2048}
@@ -74,11 +74,25 @@ function _shellllm_ask_fn() {
 }
 alias '?'='noglob _shellllm_ask_fn'
 
-# ─── `???` — answer by searching the web first. Same noglob requirement.
-function _shellllm_search_fn() {
-  ${=SHELLLM_SEARCH} "$@"
+# ─── `???` — memory layer: long-term facts + cross-session recall.
+#
+#   ??? <q>             bare query → search archived sessions
+#   ??? --add <fact>    pin a long-term fact
+#   ??? --list          list facts
+#   ??? --drop <n>      drop fact #n
+#   ??? --status        counts
+#   ??? --ask <q>       recall only `?` sessions
+#   ??? --comma <q>     recall only `,` sessions
+#   ??? --help          usage
+#
+# Every operation other than bare-query recall is a flag — no
+# bare-word verbs. `noglob` is needed because `?` is a zsh glob char;
+# aliasing `???` directly is fine because alias expansion runs before
+# globbing.
+function _shellllm_recall_fn() {
+  ${=SHELLLM_RECALL} "$@"
 }
-alias '???'='noglob _shellllm_search_fn'
+alias '???'='noglob _shellllm_recall_fn'
 
 # ─── server helpers ─────────────────────────────────────────────────────
 

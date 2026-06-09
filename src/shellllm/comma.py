@@ -3,6 +3,15 @@
 The whole point of the comma is that it *never executes*. This script
 prints the chosen command on stdout; the zsh wrapper uses ``print -z``
 to drop it on the next prompt line for the user to confirm.
+
+Sticky session
+~~~~~~~~~~~~~~
+Each terminal pane has its own ``,`` thread (see :mod:`shellllm.session`).
+The model sees prior user prompts and the JSON it previously emitted,
+so follow-ups like ``, the same but only the running ones`` refine the
+earlier proposal instead of asking from scratch. Sessions share the
+same idle TTL and archive store as ``?`` / ``???``; expired ``,``
+sessions are searchable via ``?: recall``.
 """
 
 from __future__ import annotations
@@ -12,11 +21,16 @@ import os
 import shutil
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from rich.console import Console
 
+from .archive import Archive
 from .client import LlamaServerError, chat
+from .embed import embed as embed_text
+from .session import SessionStore, sweep_expired
 
 SCHEMA = {
     "type": "object",
@@ -44,9 +58,31 @@ SCHEMA = {
 # picker stays dependency-free at the data layer.
 _BOLD_CYAN = "\x1b[1;36m"
 _DIM = "\x1b[2m"
+_CYAN = "\x1b[36m"
+_RED = "\x1b[31m"
 _RESET = "\x1b[0m"
 
 _err = Console(stderr=True)
+
+
+def _note(text: str) -> None:
+    """Dim-cyan one-liner straight to stderr.
+
+    We bypass Rich here because ``rich.Console.print`` strips embedded
+    ANSI escape characters as a safety measure (so untrusted strings
+    can't redirect the cursor). That's the right default for rendered
+    text, but our hint is fixed-content and we want the codes
+    interpreted by the terminal — so we write to stderr directly.
+    """
+    sys.stderr.write(f"{_DIM}{_CYAN}↻ {text}{_RESET}\n")
+    sys.stderr.flush()
+
+
+def _safe_embed(text: str) -> list[float] | None:
+    try:
+        return embed_text(text)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _context_block() -> str:
@@ -70,13 +106,54 @@ def _system_prompt() -> str:
         "current directory unless the user clearly means system-wide. Favor "
         "commands that print rather than mutate. Never include `rm -rf`, "
         "`sudo`, `curl|sh`, or any destructive one-liner without a safer "
-        "alternative earlier in the list. Output must match the JSON schema."
+        "alternative earlier in the list. If the conversation includes prior "
+        "suggestions and a refinement, build on the prior list rather than "
+        "restarting from scratch. Output must match the JSON schema."
     )
+
+
+def _print_usage(*, to: Any = None) -> None:
+    out = to or sys.stdout
+    out.write(
+        "usage: , <what you want to do>\n"
+        "       , --new <what you want to do>   start a fresh session\n"
+        "       , --reset                       drop current session\n"
+        "       , --history                     print session transcript\n"
+        "       , --help                        show this message\n"
+        "\n"
+        "For facts and cross-session recall, see `?: help`.\n"
+    )
+
+
+def _print_history(session: SessionStore) -> None:
+    if session.is_empty():
+        print("(no history)")
+        return
+    for m in session.messages:
+        role = m.get("role", "?")
+        content = m.get("content", "")
+        if not isinstance(content, str):
+            continue
+        if role == "assistant":
+            # The model stored a JSON blob; render its commands inline.
+            try:
+                parsed = json.loads(content)
+                items = parsed.get("commands", [])
+            except json.JSONDecodeError:
+                items = []
+            if items:
+                print(f"--- {role} (suggestions) ---")
+                for it in items:
+                    print(f"  • {it.get('command', '')}  — {it.get('note', '')}")
+                print()
+                continue
+        print(f"--- {role} ---")
+        print(content.rstrip())
+        print()
 
 
 def _fzf_pick(items: list[dict[str, str]]) -> str | None:
     """Show items in fzf, colored, with the note inline on each row."""
-    # Format: <colored line for display>\t<raw command for selection>
     lines = []
     for it in items:
         cmd, note = it["command"], it["note"]
@@ -104,11 +181,11 @@ def _fzf_pick(items: list[dict[str, str]]) -> str | None:
         input="\n".join(lines),
         text=True,
         capture_output=True,
+        check=False,
     )
     if proc.returncode != 0 or not proc.stdout.strip():
         return None
     chosen = proc.stdout.strip()
-    # Take the raw command from after the tab; fall back to whole line.
     return chosen.split("\t", 1)[1] if "\t" in chosen else chosen
 
 
@@ -146,17 +223,34 @@ def _pick(items: list[dict[str, str]]) -> str | None:
     return _stdin_pick(items)
 
 
-def main() -> int:
-    prompt = " ".join(sys.argv[1:]).strip()
-    if not prompt:
-        sys.stderr.write("usage: , <what you want to do>\n")
-        return 2
+def _build_messages(
+    *,
+    session: SessionStore,
+    prompt: str,
+    first_turn: bool,
+    resumed: bool,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Return (messages_to_send, history_to_persist_after).
 
-    messages = [
+    History is everything except the static system prompts we rebuild
+    each turn — that way, ``$PWD`` changes take effect immediately and
+    we don't bake a stale prelude into the on-disk log.
+    """
+    pwd = str(Path.cwd())
+    date = datetime.now().astimezone().strftime("%Y-%m-%d")
+
+    system_msgs: list[dict[str, Any]] = [
         {"role": "system", "content": _system_prompt()},
-        {"role": "user", "content": f"{_context_block()}\n\n{prompt}"},
     ]
+    if first_turn or resumed or session.meta.last_pwd != pwd or session.meta.last_date != date:
+        system_msgs.append({"role": "system", "content": _context_block()})
 
+    history = list(session.messages)
+    user_msg: dict[str, Any] = {"role": "user", "content": prompt}
+    return system_msgs + history + [user_msg], history + [user_msg]
+
+
+def _ask_model(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, str]]] | None:
     try:
         with _err.status("[cyan]thinking…[/cyan]", spinner="dots"):
             reply = chat(
@@ -168,24 +262,88 @@ def main() -> int:
                 max_tokens=512,
             )
     except LlamaServerError as exc:
-        _err.print(f"[red], error:[/red] {exc}")
-        return 1
+        _err.print(f"{_RED}, error:{_RESET} {exc}")
+        return None
 
     content = reply.get("content") or "{}"
     try:
         parsed = json.loads(content)
         items = parsed.get("commands", [])
     except json.JSONDecodeError:
-        _err.print(f"[red], error:[/red] model returned non-JSON: {content[:200]}")
-        return 1
-
+        _err.print(f"{_RED}, error:{_RESET} model returned non-JSON: {content[:200]}")
+        return None
     if not items:
-        _err.print("[red], error:[/red] no suggestions returned")
+        _err.print(f"{_RED}, error:{_RESET} no suggestions returned")
+        return None
+    return content, items
+
+
+def main() -> int:
+    sweep_expired()
+
+    argv = list(sys.argv[1:])
+
+    def _consume_flag(flag: str) -> bool:
+        if flag in argv:
+            argv.remove(flag)
+            return True
+        return False
+
+    if _consume_flag("--help") or _consume_flag("-h"):
+        _print_usage()
+        return 0
+
+    archive = Archive()
+    session, expired = SessionStore.open(cmd="comma", archive=archive, embed_fn=_safe_embed)
+
+    if _consume_flag("--reset"):
+        session.archive_and_reset(archive=archive, embed_fn=_safe_embed)
+        session.write()
+        print(", session reset.")
+        return 0
+
+    if _consume_flag("--history"):
+        _print_history(session)
+        return 0
+
+    if _consume_flag("--new"):
+        session.archive_and_reset(archive=archive, embed_fn=_safe_embed)
+
+    prompt = " ".join(argv).strip()
+    if not prompt:
+        _print_usage(to=sys.stderr)
+        return 2
+
+    if expired:
+        _note("idle session expired — starting fresh")
+
+    first_turn = session.is_empty()
+    resumed = not first_turn
+    if resumed:
+        _note(f"refining — turn {session.meta.turn_count + 1}")
+
+    messages, new_history_with_user = _build_messages(
+        session=session, prompt=prompt, first_turn=first_turn, resumed=resumed
+    )
+
+    result = _ask_model(messages)
+    if result is None:
         return 1
+    content, items = result
 
     chosen = _pick(items)
     if not chosen:
         return 1
+
+    # Persist the turn for the next refinement. We store the raw JSON
+    # the model produced so it sees its own prior list verbatim.
+    new_history_with_user.append({"role": "assistant", "content": content})
+    session.messages = new_history_with_user
+    pwd = str(Path.cwd())
+    date = datetime.now().astimezone().strftime("%Y-%m-%d")
+    session.touch(pwd=pwd, date=date)
+    session.write()
+
     print(chosen)
     return 0
 
