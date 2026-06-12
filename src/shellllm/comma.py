@@ -11,7 +11,7 @@ The model sees prior user prompts and the JSON it previously emitted,
 so follow-ups like ``, the same but only the running ones`` refine the
 earlier proposal instead of asking from scratch. Sessions share the
 same idle TTL and archive store as ``?`` / ``???``; expired ``,``
-sessions are searchable via ``?: recall``.
+sessions are searchable via ``??? <query>``.
 """
 
 from __future__ import annotations
@@ -125,7 +125,7 @@ def _print_usage(*, to: Any = None) -> None:
         "       , --fast|--balanced|--smart …   route this call to a tier (zsh)\n"
         "       , --help                        show this message\n"
         "\n"
-        "For facts and cross-session recall, see `?: help`.\n"
+        "For facts and cross-session recall, see `??? --help`.\n"
     )
 
 

@@ -17,7 +17,7 @@ brew install FrancoisChastel/shellllm/shellllm
 
 Both install:
 
-- `shellllm-comma` and `shellllm-ask` on `$PATH`
+- `shellllm-comma`, `shellllm-ask`, and `shellllm-recall` on `$PATH`
 - `llama.cpp` and `fzf` as hard dependencies
 - the zsh integration file at `$(brew --prefix)/share/shellllm/shellllm.zsh`
 
@@ -26,11 +26,12 @@ Finish wiring it into zsh:
 ```sh
 echo 'source "$(brew --prefix)/share/shellllm/shellllm.zsh"' >> ~/.zshrc
 exec zsh
+huggingface-cli download unsloth/Qwen3.6-27B-GGUF   # one-time, default tier
 ??              # start the backend
 ?? --list       # see which tiers are downloaded
 ```
 
-Tier model downloads still need `huggingface-cli`:
+Tier model downloads need `huggingface-cli`:
 
 ```sh
 pipx install huggingface_hub

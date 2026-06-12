@@ -79,15 +79,19 @@ class Shellllm < Formula
 
   def caveats
     <<~EOS
-      To wire the `,` `?` `??` helpers into zsh, add this line to ~/.zshrc:
+      To wire the `,` `,,` `?` `??` `???` helpers into zsh, add this to ~/.zshrc:
 
         source "#{opt_pkgshare}/shellllm.zsh"
 
-      Then reload your shell and start the backend:
+      Then reload your shell, grab a model, and start the backend:
 
+        huggingface-cli download unsloth/Qwen3.6-27B-GGUF   # one-time
         ??              # default tier (balanced)
         ?? --list       # show tiers and what's downloaded
         ?? --start fast # MoE + MTP — fastest on Apple Silicon
+
+      (Or `export SHELLLM_AUTOSTART=1` and skip `??` — the first `,` or `?`
+      starts the server for you.)
 
       Downloading tier models requires `huggingface-cli`:
 
@@ -98,16 +102,19 @@ class Shellllm < Formula
   end
 
   test do
-    # Verify the venv installed both entry-points and every module imports.
+    # Verify the venv installed every entry-point and every module imports.
     assert_predicate bin/"shellllm-comma", :executable?
     assert_predicate bin/"shellllm-ask", :executable?
+    assert_predicate bin/"shellllm-recall", :executable?
 
     system libexec/"bin/python", "-c", <<~PY
       import shellllm
       import shellllm.ask
       import shellllm.client
       import shellllm.comma
+      import shellllm.recall
       import shellllm.safe_fs
+      import shellllm.shell_context
       import shellllm.web
       assert shellllm.__version__
     PY

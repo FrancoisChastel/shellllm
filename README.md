@@ -8,6 +8,8 @@
 
 Drop English at your prompt and get a real shell command. Typo a command and fix it with two keystrokes. Ask the model a question without breaking flow. Search every past conversation by content. The whole CLI is four punctuation glyphs — `,` `?` `??` `???` — because the best terminal UI is the one that fits next to `cd` and `ls`.
 
+![shellllm demo: , proposes a command, ,, fixes the last one, ? answers and reads piped errors, ??? recalls past sessions](demo.gif)
+
 And it knows what just happened in your terminal: the previous command and its exit status ride along (redacted, local, [level-controlled](#terminal-context)), so "that" and "why did it fail" mean what you think they mean.
 
 ```text
@@ -38,20 +40,23 @@ No API key. No data leaves your machine. Works with WiFi off (except `? --web`).
 
 ## Install
 
+Three steps: get the tool, get a model, go.
+
 ```sh
+# 1. Tool (pulls llama.cpp, fzf, and the CLIs)
 brew install FrancoisChastel/shellllm/shellllm
 echo 'source "$(brew --prefix)/share/shellllm/shellllm.zsh"' >> ~/.zshrc
 exec zsh
+
+# 2. Model (one-time; `pipx install huggingface_hub` if you lack the CLI)
+huggingface-cli download unsloth/Qwen3.6-27B-GGUF
+
+# 3. Go
+??                                  # start the server (~10s once cached)
+, find the five largest files here
 ```
 
-That pulls `llama.cpp`, `fzf`, and the CLIs. Then start the model server:
-
-```sh
-??               # balanced tier (default)
-?? --list        # see what's downloaded vs. what isn't
-```
-
-Or skip the babysitting entirely — `export SHELLLM_AUTOSTART=1` and the first `,` or `?` starts it for you.
+`?? --list` shows the other tiers and exactly what to download for each. Prefer zero babysitting? `export SHELLLM_AUTOSTART=1` and skip step 3 — the first `,` or `?` starts the server for you.
 
 From source: jump to [Install from source](#install-from-source).
 
