@@ -6,7 +6,9 @@
 
 > Local LLM at your zsh prompt. Four characters, no API key, works offline.
 
-Drop English at your prompt and get a real shell command. Ask the model a question without breaking flow. Search every past conversation by content. The whole CLI is four punctuation glyphs — `,` `?` `??` `???` — because the best terminal UI is the one that fits next to `cd` and `ls`.
+Drop English at your prompt and get a real shell command. Typo a command and fix it with two keystrokes. Ask the model a question without breaking flow. Search every past conversation by content. The whole CLI is four punctuation glyphs — `,` `?` `??` `???` — because the best terminal UI is the one that fits next to `cd` and `ls`.
+
+And it knows what just happened in your terminal: the previous command and its exit status ride along (redacted, local, [level-controlled](#terminal-context)), so "that" and "why did it fail" mean what you think they mean.
 
 ```text
 $ , find the five largest files here
@@ -15,9 +17,17 @@ $ , find the five largest files here
     ls -lhS | head -5                   · ls only, no recursion
   enter: drop on prompt · esc: cancel
 
+$ git push origin amin
+error: src refspec amin does not match any
+$ ,,
+  ▶ git push origin main               · fix the branch-name typo
+
 $ ? what does git stash do
   Git stash temporarily shelves changes in your working copy so you can
   work on something else, then come back and re-apply them later...
+
+$ make 2>&1 | ? what broke
+  The linker can't find `libssl` — your Makefile hardcodes ...
 
 $ ??? git stash
   #42 · ask · 2026-06-08 11:14 · ~/proj
@@ -41,6 +51,8 @@ That pulls `llama.cpp`, `fzf`, and the CLIs. Then start the model server:
 ?? --list        # see what's downloaded vs. what isn't
 ```
 
+Or skip the babysitting entirely — `export SHELLLM_AUTOSTART=1` and the first `,` or `?` starts it for you.
+
 From source: jump to [Install from source](#install-from-source).
 
 ## The four commands
@@ -48,6 +60,7 @@ From source: jump to [Install from source](#install-from-source).
 | Cmd | What | Example |
 |---|---|---|
 | `, <english>` | Propose shell commands, pick one in fzf, drop on prompt. Never executes. | `, the five largest files here` |
+| `,,` | Fix the previous command (`, --fix`). Same picker, never executes. | `,,` after a typo'd push |
 | `? <q>` | Ask the model. Streams markdown. Sticky per-pane session. | `? what does git stash do` |
 | `???` | Memory & recall. Bare query searches archive. Flags manage facts. | `??? --add I prefer ripgrep` |
 | `??` | Start / stop / status the local `llama-server`. | `?? --start fast` |
