@@ -116,12 +116,12 @@ def _system_prompt() -> str:
 def _print_usage(*, to: Any = None) -> None:
     out = to or sys.stdout
     out.write(
-        "usage: , <what you want to do>\n"
-        "       , --fix [hint]                  fix the previous command (also: `,,`)\n"
+        "usage: , <what you want to do>          propose commands (no terminal context)\n"
+        "       ,, <what you want to do>         same, with terminal context (, --ctx)\n"
+        "       ,,                               fix the previous command (, --fix [hint])\n"
         "       , --new <what you want to do>   start a fresh session\n"
         "       , --reset                       drop current session\n"
         "       , --history                     print session transcript\n"
-        "       , --no-ctx <prompt>             skip terminal context this turn\n"
         "       , --fast|--balanced|--smart …   route this call to a tier (zsh)\n"
         "       , --help                        show this message\n"
         "\n"
@@ -233,7 +233,7 @@ def _build_messages(
     prompt: str,
     first_turn: bool,
     resumed: bool,
-    shell_ctx: bool = True,
+    shell_ctx: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Return (messages_to_send, history_to_persist_after).
 
@@ -250,9 +250,9 @@ def _build_messages(
     if first_turn or resumed or session.meta.last_pwd != pwd or session.meta.last_date != date:
         system_msgs.append({"role": "system", "content": _context_block()})
 
-    # Terminal context is per-turn ephemeral: rebuilt every call, never
-    # persisted (system messages are stripped before the session is
-    # written), and empty unless SHELLLM_SHELL_CONTEXT is set.
+    # Terminal context is opt-in per call (`--ctx` / `--fix`) and
+    # per-turn ephemeral: rebuilt every call, never persisted (system
+    # messages are stripped before the session is written).
     if shell_ctx:
         ctx_block = build_shell_context_block()
         if ctx_block:
@@ -322,15 +322,18 @@ def main() -> int:
     if _consume_flag("--new"):
         session.archive_and_reset(archive=archive, embed_fn=_safe_embed)
 
-    shell_ctx = not _consume_flag("--no-ctx")
+    # `,` is the context-free verb; `--ctx` (the zsh `,, <prompt>`) brings
+    # the terminal context along, and `--fix` (bare `,,`) implies it.
+    ctx_mode = _consume_flag("--ctx")
     fix_mode = _consume_flag("--fix")
+    shell_ctx = ctx_mode or fix_mode
 
     prompt = " ".join(argv).strip()
 
+    if ctx_mode and not fix_mode and not build_shell_context_block():
+        _note("terminal context unavailable (SHELLLM_SHELL_CONTEXT=off?) — proceeding without")
+
     if fix_mode:
-        if not shell_ctx:
-            _err.print(f"{_RED}, error:{_RESET} --fix needs terminal context; drop --no-ctx")
-            return 2
         if not build_shell_context_block():
             _err.print(f"{_RED}, error:{_RESET} --fix needs terminal context, and none arrived.")
             _err.print(

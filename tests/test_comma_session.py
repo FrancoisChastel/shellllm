@@ -188,34 +188,38 @@ def _enable_shell_ctx(monkeypatch, *, status="1"):
     monkeypatch.setenv("SHELLLM_LAST_STATUS", status)
 
 
-def test_shell_context_injected_when_enabled(monkeypatch, capsys, isolated, fake_model, auto_pick):
+def test_ctx_flag_injects_shell_context(monkeypatch, capsys, isolated, fake_model, auto_pick):
     _enable_shell_ctx(monkeypatch)
-    _run(["retry", "that"], monkeypatch)
+    _run(["--ctx", "retry", "that"], monkeypatch)
     sent = fake_model[0]
     system_text = "\n".join(m["content"] for m in sent if m["role"] == "system")
     assert "git push origin main" in system_text
 
 
-def test_shell_context_absent_by_default(monkeypatch, capsys, isolated, fake_model, auto_pick):
-    monkeypatch.delenv("SHELLLM_SHELL_CONTEXT", raising=False)
-    monkeypatch.setenv("SHELLLM_LAST_CMD", "git push origin main")
+def test_plain_comma_never_injects_shell_context(
+    monkeypatch, capsys, isolated, fake_model, auto_pick
+):
+    """`,` is the context-free verb — even with the ladder enabled."""
+    _enable_shell_ctx(monkeypatch)
     _run(["list", "files"], monkeypatch)
     sent = fake_model[0]
     system_text = "\n".join(m["content"] for m in sent if m["role"] == "system")
     assert "git push origin main" not in system_text
 
 
-def test_no_ctx_flag_skips_injection(monkeypatch, capsys, isolated, fake_model, auto_pick):
-    _enable_shell_ctx(monkeypatch)
-    _run(["--no-ctx", "list", "files"], monkeypatch)
+def test_ctx_flag_with_ladder_off_hints(monkeypatch, capsys, isolated, fake_model, auto_pick):
+    monkeypatch.delenv("SHELLLM_SHELL_CONTEXT", raising=False)
+    monkeypatch.setenv("SHELLLM_LAST_CMD", "git push origin main")
+    assert _run(["--ctx", "list", "files"], monkeypatch) == 0
     sent = fake_model[0]
     system_text = "\n".join(m["content"] for m in sent if m["role"] == "system")
     assert "git push origin main" not in system_text
+    assert "terminal context unavailable" in capsys.readouterr().err
 
 
 def test_shell_context_never_persisted(monkeypatch, capsys, isolated, fake_model, auto_pick):
     _enable_shell_ctx(monkeypatch)
-    _run(["retry", "that"], monkeypatch)
+    _run(["--ctx", "retry", "that"], monkeypatch)
     store, _ = SessionStore.open(cmd="comma")
     assert all(m.get("role") != "system" for m in store.messages)
 
@@ -225,12 +229,6 @@ def test_fix_without_context_errors_with_hint(monkeypatch, capsys, isolated):
     assert _run(["--fix"], monkeypatch) == 2
     err = capsys.readouterr().err
     assert "SHELLLM_SHELL_CONTEXT" in err
-
-
-def test_fix_with_no_ctx_is_rejected(monkeypatch, capsys, isolated):
-    _enable_shell_ctx(monkeypatch)
-    assert _run(["--fix", "--no-ctx"], monkeypatch) == 2
-    assert "--no-ctx" in capsys.readouterr().err
 
 
 def test_fix_builds_repair_prompt(monkeypatch, capsys, isolated, fake_model, auto_pick):

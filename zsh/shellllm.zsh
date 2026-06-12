@@ -178,11 +178,18 @@ function ,() {
   _shellllm_comma_run $? "$@"
 }
 
-# ─── `,,` — fix the previous command (`, --fix`). Uses the terminal-
-# context ladder (on at `cmd` by default; SHELLLM_SHELL_CONTEXT=off
-# disables it and `,,` with it).
+# ─── `,,` — the comma that knows what just happened. Doubling the glyph
+# brings the terminal context along (`, --ctx`); plain `,` stays
+# context-free. Bare `,,` with no prompt means "fix the previous
+# command" (`, --fix`). The ladder level (SHELLLM_SHELL_CONTEXT,
+# default `cmd`) controls how much context rides along.
 function ,,() {
-  _shellllm_comma_run $? --fix "$@"
+  local __last_status=$?
+  if (( $# )); then
+    _shellllm_comma_run $__last_status --ctx "$@"
+  else
+    _shellllm_comma_run $__last_status --fix
+  fi
 }
 
 # ─── `?` — answer. `noglob` is required because `?` is a zsh glob char.

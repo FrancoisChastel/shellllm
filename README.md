@@ -59,15 +59,15 @@ From source: jump to [Install from source](#install-from-source).
 
 | Cmd | What | Example |
 |---|---|---|
-| `, <english>` | Propose shell commands, pick one in fzf, drop on prompt. Never executes. | `, the five largest files here` |
-| `,,` | Fix the previous command (`, --fix`). Same picker, never executes. | `,,` after a typo'd push |
+| `, <english>` | Propose shell commands, pick one in fzf, drop on prompt. No terminal context. Never executes. | `, the five largest files here` |
+| `,, [english]` | Same, but **with terminal context**. Bare `,,` = fix the previous command. | `,,` after a typo'd push |
 | `? <q>` | Ask the model. Streams markdown. Sticky per-pane session. | `? what does git stash do` |
 | `???` | Memory & recall. Bare query searches archive. Flags manage facts. | `??? --add I prefer ripgrep` |
 | `??` | Start / stop / status the local `llama-server`. | `?? --start fast` |
 
 `,` and `?` are **conversational** — each terminal pane keeps its own thread. Type `, the same but with json output` and the model knows what "the same" means. After 30 min idle the thread auto-rotates so a forgotten tab doesn't bleed stale context.
 
-`,,` (alias for `, --fix`) repairs whatever just failed: it sends the previous command, its exit status, and — at higher [terminal context](#terminal-context) levels — recent output, and proposes corrected commands through the same picker.
+`,,` is the comma that knows what just happened. Doubling the glyph brings the [terminal context](#terminal-context) along — the previous command, its exit status, and (at higher levels) recent output — so `,, compress the file it just produced` resolves "it" correctly. Bare `,,` means "fix the previous command": it diagnoses the failure and proposes corrections through the same picker. Plain `,` stays context-free.
 
 `?` has tools: read files (filesystem-gated), DuckDuckGo search, fetch URL. Force web-first with `? --web <q>`. It's also pipe-friendly — `make 2>&1 | ? what broke` turns the piped output into context.
 
@@ -140,13 +140,16 @@ export SHELLLM_SHELL_CONTEXT=history    # + last 10 commands
 export SHELLLM_SHELL_CONTEXT=output     # + recent pane output (tmux only)
 ```
 
-References resolve themselves:
+Who uses it: `?` always (so "why did that fail" just works), `,,` on demand (doubling the glyph = bring the context), and plain `,` never.
 
 ```sh
 $ git push origin amin
 error: src refspec amin does not match any
-$ ,,                              # proposes: git push origin main
+$ ,,                              # bare ,, = fix → proposes: git push origin main
 $ ? why did that fail             # the model sees the command and its exit status
+
+$ tar -czf logs.tgz var/log/app
+$ ,, verify it and show the largest entries   # ",, <prompt>" = propose with context
 ```
 
 How it stays private:
@@ -202,7 +205,7 @@ Every file read through `?` goes through `safe_fs.safe_read`. Four rules, all en
 Reads cap at 1 MB and use `O_NOFOLLOW` as a belt against a resolve-then-open symlink race.
 
 ```sh
-pytest -v   # 257 tests; 38 dedicated to symlinks, traversal, denylist, lookalikes, truncation
+pytest -v   # 256 tests; 38 dedicated to symlinks, traversal, denylist, lookalikes, truncation
 ```
 
 ## Configuration
