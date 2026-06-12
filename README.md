@@ -6,7 +6,9 @@
 
 > Local LLM at your zsh prompt. Four characters, no API key, works offline.
 
-Drop English at your prompt and get a real shell command. Ask the model a question without breaking flow. Search every past conversation by content. The whole CLI is four punctuation glyphs — `,` `?` `??` `???` — because the best terminal UI is the one that fits next to `cd` and `ls`.
+Drop English at your prompt and get a real shell command. Typo a command and fix it with two keystrokes. Ask the model a question without breaking flow. Search every past conversation by content. The whole CLI is four punctuation glyphs — `,` `?` `??` `???` — because the best terminal UI is the one that fits next to `cd` and `ls`.
+
+And it knows what just happened in your terminal: the previous command and its exit status ride along (redacted, local, [level-controlled](#terminal-context)), so "that" and "why did it fail" mean what you think they mean.
 
 ```text
 $ , find the five largest files here
@@ -15,9 +17,17 @@ $ , find the five largest files here
     ls -lhS | head -5                   · ls only, no recursion
   enter: drop on prompt · esc: cancel
 
+$ git push origin amin
+error: src refspec amin does not match any
+$ ,,
+  ▶ git push origin main               · fix the branch-name typo
+
 $ ? what does git stash do
   Git stash temporarily shelves changes in your working copy so you can
   work on something else, then come back and re-apply them later...
+
+$ make 2>&1 | ? what broke
+  The linker can't find `libssl` — your Makefile hardcodes ...
 
 $ ??? git stash
   #42 · ask · 2026-06-08 11:14 · ~/proj
@@ -41,20 +51,23 @@ That pulls `llama.cpp`, `fzf`, and the CLIs. Then start the model server:
 ?? --list        # see what's downloaded vs. what isn't
 ```
 
+Or skip the babysitting entirely — `export SHELLLM_AUTOSTART=1` and the first `,` or `?` starts it for you.
+
 From source: jump to [Install from source](#install-from-source).
 
 ## The four commands
 
 | Cmd | What | Example |
 |---|---|---|
-| `, <english>` | Propose shell commands, pick one in fzf, drop on prompt. Never executes. | `, the five largest files here` |
+| `, <english>` | Propose shell commands, pick one in fzf, drop on prompt. No terminal context. Never executes. | `, the five largest files here` |
+| `,, [english]` | Same, but **with terminal context**. Bare `,,` = fix the previous command. | `,,` after a typo'd push |
 | `? <q>` | Ask the model. Streams markdown. Sticky per-pane session. | `? what does git stash do` |
 | `???` | Memory & recall. Bare query searches archive. Flags manage facts. | `??? --add I prefer ripgrep` |
 | `??` | Start / stop / status the local `llama-server`. | `?? --start fast` |
 
 `,` and `?` are **conversational** — each terminal pane keeps its own thread. Type `, the same but with json output` and the model knows what "the same" means. After 30 min idle the thread auto-rotates so a forgotten tab doesn't bleed stale context.
 
-`,,` (alias for `, --fix`) repairs whatever just failed: it sends the previous command, its exit status, and — at higher [terminal context](#terminal-context) levels — recent output, and proposes corrected commands through the same picker.
+`,,` is the comma that knows what just happened. Doubling the glyph brings the [terminal context](#terminal-context) along — the previous command, its exit status, and (at higher levels) recent output — so `,, compress the file it just produced` resolves "it" correctly. Bare `,,` means "fix the previous command": it diagnoses the failure and proposes corrections through the same picker. Plain `,` stays context-free.
 
 `?` has tools: read files (filesystem-gated), DuckDuckGo search, fetch URL. Force web-first with `? --web <q>`. It's also pipe-friendly — `make 2>&1 | ? what broke` turns the piped output into context.
 
@@ -127,13 +140,16 @@ export SHELLLM_SHELL_CONTEXT=history    # + last 10 commands
 export SHELLLM_SHELL_CONTEXT=output     # + recent pane output (tmux only)
 ```
 
-References resolve themselves:
+Who uses it: `?` always (so "why did that fail" just works), `,,` on demand (doubling the glyph = bring the context), and plain `,` never.
 
 ```sh
 $ git push origin amin
 error: src refspec amin does not match any
-$ ,,                              # proposes: git push origin main
+$ ,,                              # bare ,, = fix → proposes: git push origin main
 $ ? why did that fail             # the model sees the command and its exit status
+
+$ tar -czf logs.tgz var/log/app
+$ ,, verify it and show the largest entries   # ",, <prompt>" = propose with context
 ```
 
 How it stays private:
@@ -189,7 +205,7 @@ Every file read through `?` goes through `safe_fs.safe_read`. Four rules, all en
 Reads cap at 1 MB and use `O_NOFOLLOW` as a belt against a resolve-then-open symlink race.
 
 ```sh
-pytest -v   # 257 tests; 38 dedicated to symlinks, traversal, denylist, lookalikes, truncation
+pytest -v   # 256 tests; 38 dedicated to symlinks, traversal, denylist, lookalikes, truncation
 ```
 
 ## Configuration
