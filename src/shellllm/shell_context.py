@@ -108,7 +108,9 @@ def build_shell_context_block(env: Mapping[str, str] | None = None) -> str:
     if level >= LEVELS.index("history"):
         history = env.get("SHELLLM_RECENT_HISTORY", "").strip()
         if history:
-            lines = [ln.strip()[:MAX_HISTORY_LINE_CHARS] for ln in history.splitlines() if ln.strip()]
+            lines = [
+                ln.strip()[:MAX_HISTORY_LINE_CHARS] for ln in history.splitlines() if ln.strip()
+            ]
             lines = lines[-MAX_HISTORY_LINES:]
             if lines:
                 joined = "\n".join(f"    {redact(ln)}" for ln in lines)

@@ -125,7 +125,9 @@ def test_redacts_aws_access_key():
 
 
 def test_redacts_github_token():
-    out = redact("git remote set-url origin https://ghp_abcdefghijklmnopqrstuvwxyz123456@github.com/x/y")
+    out = redact(
+        "git remote set-url origin https://ghp_abcdefghijklmnopqrstuvwxyz123456@github.com/x/y"
+    )
     assert "ghp_abcdefghijklmnopqrstuvwxyz123456" not in out
 
 

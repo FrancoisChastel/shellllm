@@ -333,7 +333,9 @@ def main() -> int:
             return 2
         if not build_shell_context_block():
             _err.print(f"{_RED}, error:{_RESET} --fix needs terminal context, and none arrived.")
-            _err.print("  if you set SHELLLM_SHELL_CONTEXT=off, re-enable it: export SHELLLM_SHELL_CONTEXT=cmd")
+            _err.print(
+                "  if you set SHELLLM_SHELL_CONTEXT=off, re-enable it: export SHELLLM_SHELL_CONTEXT=cmd"
+            )
             _err.print("  otherwise re-source zsh/shellllm.zsh (older versions didn't capture).")
             return 2
         repair = (
