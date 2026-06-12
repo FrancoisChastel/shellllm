@@ -49,6 +49,7 @@ from .embed import embed as embed_text
 from .memory import MemoryStore, render_memory_block
 from .safe_fs import WallViolation, safe_read_text
 from .session import SessionStore, sweep_expired
+from .shell_context import MAX_PIPED_CHARS, build_piped_block, build_shell_context_block
 from .web import fetch_url_as_text, search_as_text
 
 MAX_ITERATIONS = 12
@@ -274,6 +275,8 @@ def run_agent(
     cmd_label: str = "ask",
     archive: Archive | None = None,
     auto_recall: bool = False,
+    shell_ctx: bool = True,
+    piped_input: str = "",
 ) -> int:
     """Run the tool-calling agent loop. Returns a process-style exit code.
 
@@ -325,6 +328,22 @@ def run_agent(
         )
     ):
         system_msgs.append({"role": "system", "content": build_prelude()})
+
+    # Terminal context (opt-in via SHELLLM_SHELL_CONTEXT) is per-turn
+    # ephemeral: rebuilt fresh on every invocation and never persisted —
+    # the just-prepended system prefix is stripped before the session is
+    # written, so "that command" always means the *latest* one.
+    if include_context and shell_ctx:
+        ctx_block = build_shell_context_block()
+        if ctx_block:
+            system_msgs.append({"role": "system", "content": ctx_block})
+
+    # Piped stdin (`make 2>&1 | ? what broke`) — explicit consent by
+    # construction, so no ladder gate. Per-turn ephemeral like the rest
+    # of the system prefix.
+    piped_block = build_piped_block(piped_input)
+    if piped_block:
+        system_msgs.append({"role": "system", "content": piped_block})
 
     # claude-mem context injection: only on a brand-new session, so we
     # don't repeatedly re-paste the same prior observations as the
@@ -505,6 +524,19 @@ __all__ = [
 ]
 
 
+def _read_piped_stdin() -> str:
+    """Return piped stdin content (capped), or "" on a TTY / no data."""
+    stdin = sys.stdin
+    try:
+        if stdin is None or stdin.isatty():
+            return ""
+        # Read one char past the cap so build_piped_block knows to mark
+        # the result as truncated.
+        return stdin.read(MAX_PIPED_CHARS + 1)
+    except (OSError, ValueError, UnicodeDecodeError):
+        return ""
+
+
 def _print_usage(label: str, *, to: Any = None) -> None:
     """Write the flag reference to stdout (default) or a given stream."""
     out = to or sys.stdout
@@ -517,6 +549,9 @@ def _print_usage(label: str, *, to: Any = None) -> None:
         f"       {label} --compact                 force compaction\n"
         f"       {label} --auto-recall <q>         inject archive hits as context\n"
         f"       {label} --no-auto-recall <q>      skip recall this turn\n"
+        f"       {label} --no-ctx <q>              skip terminal context this turn\n"
+        f"       cmd 2>&1 | {label} <q>            piped input becomes context\n"
+        f"       {label} --fast|--balanced|--smart  route this call to a tier (zsh)\n"
         f"       {label} --mem | --no-mem          force claude-mem on/off for this call\n"
         f"       {label} --help                    show this message\n"
         f"\n"
@@ -589,6 +624,8 @@ def run_cli(
     # --auto-recall (or SHELLLM_AUTO_RECALL=1) injects archive hits as
     # context on the first turn of a new session. --no-auto-recall
     # overrides the env var for this call.
+    shell_ctx = not _consume_flag("--no-ctx")
+
     no_recall = _consume_flag("--no-auto-recall")
     auto_recall_flag = _consume_flag("--auto-recall")
     env_recall = os.environ.get("SHELLLM_AUTO_RECALL", "").strip().lower() in (
@@ -646,6 +683,8 @@ def run_cli(
             cmd_label=cmd,
             archive=archive,
             auto_recall=auto_recall,
+            shell_ctx=shell_ctx,
+            piped_input=_read_piped_stdin(),
         )
     except LlamaServerError as exc:
         sys.stderr.write(f"{_RED}{err_label} error:{_RESET} {exc}\n")

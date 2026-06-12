@@ -182,6 +182,74 @@ def test_resume_hint_writes_raw_ansi_not_rich_markup(
     assert "↻ refining" in err
 
 
+def _enable_shell_ctx(monkeypatch, *, status="1"):
+    monkeypatch.setenv("SHELLLM_SHELL_CONTEXT", "cmd")
+    monkeypatch.setenv("SHELLLM_LAST_CMD", "git push origin main")
+    monkeypatch.setenv("SHELLLM_LAST_STATUS", status)
+
+
+def test_shell_context_injected_when_enabled(monkeypatch, capsys, isolated, fake_model, auto_pick):
+    _enable_shell_ctx(monkeypatch)
+    _run(["retry", "that"], monkeypatch)
+    sent = fake_model[0]
+    system_text = "\n".join(m["content"] for m in sent if m["role"] == "system")
+    assert "git push origin main" in system_text
+
+
+def test_shell_context_absent_by_default(monkeypatch, capsys, isolated, fake_model, auto_pick):
+    monkeypatch.delenv("SHELLLM_SHELL_CONTEXT", raising=False)
+    monkeypatch.setenv("SHELLLM_LAST_CMD", "git push origin main")
+    _run(["list", "files"], monkeypatch)
+    sent = fake_model[0]
+    system_text = "\n".join(m["content"] for m in sent if m["role"] == "system")
+    assert "git push origin main" not in system_text
+
+
+def test_no_ctx_flag_skips_injection(monkeypatch, capsys, isolated, fake_model, auto_pick):
+    _enable_shell_ctx(monkeypatch)
+    _run(["--no-ctx", "list", "files"], monkeypatch)
+    sent = fake_model[0]
+    system_text = "\n".join(m["content"] for m in sent if m["role"] == "system")
+    assert "git push origin main" not in system_text
+
+
+def test_shell_context_never_persisted(monkeypatch, capsys, isolated, fake_model, auto_pick):
+    _enable_shell_ctx(monkeypatch)
+    _run(["retry", "that"], monkeypatch)
+    store, _ = SessionStore.open(cmd="comma")
+    assert all(m.get("role") != "system" for m in store.messages)
+
+
+def test_fix_without_context_errors_with_hint(monkeypatch, capsys, isolated):
+    monkeypatch.delenv("SHELLLM_SHELL_CONTEXT", raising=False)
+    assert _run(["--fix"], monkeypatch) == 2
+    err = capsys.readouterr().err
+    assert "SHELLLM_SHELL_CONTEXT" in err
+
+
+def test_fix_with_no_ctx_is_rejected(monkeypatch, capsys, isolated):
+    _enable_shell_ctx(monkeypatch)
+    assert _run(["--fix", "--no-ctx"], monkeypatch) == 2
+    assert "--no-ctx" in capsys.readouterr().err
+
+
+def test_fix_builds_repair_prompt(monkeypatch, capsys, isolated, fake_model, auto_pick):
+    _enable_shell_ctx(monkeypatch)
+    assert _run(["--fix"], monkeypatch) == 0
+    sent = fake_model[0]
+    user_msg = next(m["content"] for m in sent if m["role"] == "user")
+    assert "previous command" in user_msg
+    system_text = "\n".join(m["content"] for m in sent if m["role"] == "system")
+    assert "git push origin main" in system_text
+
+
+def test_fix_appends_user_hint(monkeypatch, capsys, isolated, fake_model, auto_pick):
+    _enable_shell_ctx(monkeypatch)
+    assert _run(["--fix", "I", "meant", "the", "dev", "branch"], monkeypatch) == 0
+    user_msg = next(m["content"] for m in fake_model[0] if m["role"] == "user")
+    assert "I meant the dev branch" in user_msg
+
+
 def test_redirect_for_ask_remember(monkeypatch, capsys, isolated):
     """`,` doesn't share `?`'s deprecation hints — it has its own surface."""
 

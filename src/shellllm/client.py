@@ -18,6 +18,26 @@ DEFAULT_BASE_URL = os.environ.get("SHELLLM_BASE_URL", "http://127.0.0.1:8080")
 DEFAULT_MODEL = os.environ.get("SHELLLM_MODEL", "local")
 DEFAULT_TIMEOUT = float(os.environ.get("SHELLLM_TIMEOUT", "120"))
 
+# Env name read lazily so tests can monkeypatch + the same key powers
+# both chat and (optionally) embeddings without an import-time race.
+API_KEY_ENV = "SHELLLM_API_KEY"
+
+
+def _auth_headers() -> dict[str, str]:
+    """Build request headers with optional Bearer auth.
+
+    The local ``llama-server`` doesn't need auth, so the bearer token
+    is opt-in via ``SHELLLM_API_KEY``. Setting it lets you point
+    ``SHELLLM_BASE_URL`` at any OpenAI-compatible endpoint (OpenAI,
+    OpenRouter, Groq, Together, Mistral, …) and have the chat path
+    "just work".
+    """
+    headers = {"Content-Type": "application/json"}
+    key = os.environ.get(API_KEY_ENV, "").strip()
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    return headers
+
 
 class LlamaServerError(RuntimeError):
     pass
@@ -60,11 +80,14 @@ def chat(
         r = httpx.post(
             f"{base_url}/v1/chat/completions",
             json=payload,
+            headers=_auth_headers(),
             timeout=DEFAULT_TIMEOUT,
         )
     except httpx.ConnectError as exc:
         raise LlamaServerError(
-            f"can't reach llama-server at {base_url}\n  what to do: run `??` to start it"
+            f"can't reach llama-server at {base_url}\n"
+            "  what to do: run `??` to start it "
+            "(or `export SHELLLM_AUTOSTART=1` to start on demand)"
         ) from exc
     except httpx.ReadTimeout as exc:
         raise LlamaServerError(f"llama-server timed out after {DEFAULT_TIMEOUT}s") from exc
@@ -122,6 +145,7 @@ def chat_stream(
             "POST",
             f"{base_url}/v1/chat/completions",
             json=payload,
+            headers=_auth_headers(),
             timeout=timeout,
         ) as r:
             if r.status_code != 200:
@@ -160,7 +184,9 @@ def chat_stream(
                     finish_reason = choice["finish_reason"]
     except httpx.ConnectError as exc:
         raise LlamaServerError(
-            f"can't reach llama-server at {base_url}\n  what to do: run `??` to start it"
+            f"can't reach llama-server at {base_url}\n"
+            "  what to do: run `??` to start it "
+            "(or `export SHELLLM_AUTOSTART=1` to start on demand)"
         ) from exc
     except httpx.ReadTimeout as exc:
         raise LlamaServerError("llama-server stream timed out") from exc

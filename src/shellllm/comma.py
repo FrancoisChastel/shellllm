@@ -31,6 +31,7 @@ from .archive import Archive
 from .client import LlamaServerError, chat
 from .embed import embed as embed_text
 from .session import SessionStore, sweep_expired
+from .shell_context import build_shell_context_block
 
 SCHEMA = {
     "type": "object",
@@ -116,9 +117,12 @@ def _print_usage(*, to: Any = None) -> None:
     out = to or sys.stdout
     out.write(
         "usage: , <what you want to do>\n"
+        "       , --fix [hint]                  fix the previous command (also: `,,`)\n"
         "       , --new <what you want to do>   start a fresh session\n"
         "       , --reset                       drop current session\n"
         "       , --history                     print session transcript\n"
+        "       , --no-ctx <prompt>             skip terminal context this turn\n"
+        "       , --fast|--balanced|--smart …   route this call to a tier (zsh)\n"
         "       , --help                        show this message\n"
         "\n"
         "For facts and cross-session recall, see `?: help`.\n"
@@ -229,6 +233,7 @@ def _build_messages(
     prompt: str,
     first_turn: bool,
     resumed: bool,
+    shell_ctx: bool = True,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Return (messages_to_send, history_to_persist_after).
 
@@ -244,6 +249,14 @@ def _build_messages(
     ]
     if first_turn or resumed or session.meta.last_pwd != pwd or session.meta.last_date != date:
         system_msgs.append({"role": "system", "content": _context_block()})
+
+    # Terminal context is per-turn ephemeral: rebuilt every call, never
+    # persisted (system messages are stripped before the session is
+    # written), and empty unless SHELLLM_SHELL_CONTEXT is set.
+    if shell_ctx:
+        ctx_block = build_shell_context_block()
+        if ctx_block:
+            system_msgs.append({"role": "system", "content": ctx_block})
 
     history = list(session.messages)
     user_msg: dict[str, Any] = {"role": "user", "content": prompt}
@@ -309,7 +322,29 @@ def main() -> int:
     if _consume_flag("--new"):
         session.archive_and_reset(archive=archive, embed_fn=_safe_embed)
 
+    shell_ctx = not _consume_flag("--no-ctx")
+    fix_mode = _consume_flag("--fix")
+
     prompt = " ".join(argv).strip()
+
+    if fix_mode:
+        if not shell_ctx:
+            _err.print(f"{_RED}, error:{_RESET} --fix needs terminal context; drop --no-ctx")
+            return 2
+        if not build_shell_context_block():
+            _err.print(f"{_RED}, error:{_RESET} --fix needs terminal context, and none arrived.")
+            _err.print(
+                "  if you set SHELLLM_SHELL_CONTEXT=off, re-enable it: export SHELLLM_SHELL_CONTEXT=cmd"
+            )
+            _err.print("  otherwise re-source zsh/shellllm.zsh (older versions didn't capture).")
+            return 2
+        repair = (
+            "Diagnose the previous command using the terminal context "
+            "(command, exit status, output if present) and propose corrected "
+            "commands that do what the user wanted."
+        )
+        prompt = f"{repair} Hint from the user: {prompt}" if prompt else repair
+
     if not prompt:
         _print_usage(to=sys.stderr)
         return 2
@@ -323,7 +358,11 @@ def main() -> int:
         _note(f"refining — turn {session.meta.turn_count + 1}")
 
     messages, new_history_with_user = _build_messages(
-        session=session, prompt=prompt, first_turn=first_turn, resumed=resumed
+        session=session,
+        prompt=prompt,
+        first_turn=first_turn,
+        resumed=resumed,
+        shell_ctx=shell_ctx,
     )
 
     result = _ask_model(messages)

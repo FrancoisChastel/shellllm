@@ -15,6 +15,12 @@
 : ${SHELLLM_CTX:=32768}
 : ${SHELLLM_LOG:=$HOME/.cache/shellllm/llama-server.log}
 : ${SHELLLM_EMBED_LOG:=$HOME/.cache/shellllm/llama-embed.log}
+# Terminal-context ladder (see below). Defaults to `cmd` — previous
+# command + exit status — which is what makes `,,` and "why did that
+# fail" work out of the box. Local-first means this never leaves the
+# machine unless you point SHELLLM_BASE_URL at a hosted API; set it to
+# `off` to disable capture entirely.
+: ${SHELLLM_SHELL_CONTEXT:=cmd}
 
 # ─── Tier registry ──────────────────────────────────────────────────────
 #
@@ -42,6 +48,15 @@ _SHELLLM_TIER_DESC[smart]="latest coder-tuned model — best quality, needs down
 typeset -ga _SHELLLM_TIER_ORDER
 _SHELLLM_TIER_ORDER=(fast balanced smart)
 
+# Tier → port. Balanced owns the default port so plain `??` + `?` keep
+# their historical behavior; the other tiers get dedicated ports so two
+# models can serve side by side and `, --fast` / `? --smart` can route
+# a single call to a specific one.
+typeset -gA _SHELLLM_TIER_PORT
+_SHELLLM_TIER_PORT[fast]="${SHELLLM_PORT_FAST:-8091}"
+_SHELLLM_TIER_PORT[balanced]="${SHELLLM_PORT_BALANCED:-$SHELLLM_PORT}"
+_SHELLLM_TIER_PORT[smart]="${SHELLLM_PORT_SMART:-8093}"
+
 # Embedding tiers — a separate registry because the model lineage and
 # size targets are different (we want something small and fast, not a
 # 27B chat model). `?? --start-embed <tier>` resolves against this map.
@@ -61,16 +76,123 @@ _SHELLLM_EMBED_DESC[nomic]="nomic-embed-text-v1.5 — strong general-purpose ret
 typeset -ga _SHELLLM_EMBED_ORDER
 _SHELLLM_EMBED_ORDER=(tiny bge nomic)
 
+# ─── terminal context (opt-in privacy ladder) ──────────────────────────
+#
+# SHELLLM_SHELL_CONTEXT=off|cmd|history|output   (default: cmd)
+#
+#   off       nothing captured
+#   cmd       previous command + exit status (default)
+#   history   + last 10 commands
+#   output    + recent pane output (tmux only)
+#
+# Captured values are passed as per-invocation environment — nothing is
+# exported into the shell, and the Python side re-checks the level and
+# redacts secret-shaped strings before anything reaches the model.
+function _shellllm_with_ctx() {
+  local last_status=$1; shift
+  local level="${SHELLLM_SHELL_CONTEXT:-off}"
+  if [[ $level != cmd && $level != history && $level != output ]]; then
+    "$@"
+    return $?
+  fi
+  local last_cmd hist="" out=""
+  # The command being executed is already in history, so the *previous*
+  # one is entry -2.
+  last_cmd="$(builtin fc -ln -2 -2 2>/dev/null)"
+  last_cmd="${last_cmd#"${last_cmd%%[![:space:]]*}"}"
+  if [[ $level == history || $level == output ]]; then
+    hist="$(builtin fc -ln -11 -2 2>/dev/null)"
+  fi
+  if [[ $level == output && -n ${TMUX:-} ]]; then
+    out="$(command tmux capture-pane -p -S -60 2>/dev/null)"
+  fi
+  # The level rides along explicitly: it may be a plain (unexported)
+  # shell variable, and the Python side re-checks it from the env.
+  SHELLLM_SHELL_CONTEXT="$level" \
+  SHELLLM_LAST_STATUS="$last_status" \
+  SHELLLM_LAST_CMD="$last_cmd" \
+  SHELLLM_RECENT_HISTORY="$hist" \
+  SHELLLM_PANE_OUTPUT="$out" \
+  "$@"
+}
+
+# ─── lazy start ─────────────────────────────────────────────────────────
+#
+# SHELLLM_AUTOSTART=1 makes `,` / `?` bring the default tier up on demand
+# instead of erroring when the server is down. Off by default: starting
+# a multi-GB model is a deliberate act, and the first start can take a
+# minute. The health probe only runs when the feature is on.
+function _shellllm_autostart() {
+  [[ "${SHELLLM_AUTOSTART:-0}" == 1 ]] || return 0
+  _shellllm_server_up && return 0
+  print -u2 -- "shellllm: llama-server is down — autostarting (SHELLLM_AUTOSTART=1)"
+  _shellllm_start >&2
+}
+
+# ─── per-call model routing ─────────────────────────────────────────────
+#
+# `, --fast …` / `? --smart …` send one call to a specific tier's server
+# (see _SHELLLM_TIER_PORT). The flag is consumed here; the Python CLI
+# never sees it — it just gets SHELLLM_BASE_URL pointed at the right
+# port. The tier must already be up: `?? --start fast`.
+#
+# Only the FIRST argument routes, so prose mentioning --fast later in a
+# prompt (`? what does --fast do in pip`) passes through untouched.
+#
+# Outputs via globals (zsh has no multi-value returns):
+#   _shellllm_route_url    base URL override, or "" for the default
+#   _shellllm_route_args   remaining args with the tier flag removed
+typeset -g _shellllm_route_url
+typeset -ga _shellllm_route_args
+
+function _shellllm_route() {
+  _shellllm_route_url=""
+  _shellllm_route_args=("$@")
+  local tier=""
+  case "${1:-}" in
+    --fast|--balanced|--smart) tier="${1#--}"; shift; _shellllm_route_args=("$@") ;;
+    *) return 0 ;;
+  esac
+  local port="${_SHELLLM_TIER_PORT[$tier]}"
+  if ! _shellllm_server_up "$port"; then
+    print -u2 -- "shellllm: tier '$tier' isn't running on :${port}"
+    print -u2 -- "  what to do:  ?? --start $tier"
+    return 1
+  fi
+  _shellllm_route_url="http://127.0.0.1:${port}"
+}
+
 # ─── `,` — propose, never execute. Lands on the prompt line via print -z.
-function ,() {
+function _shellllm_comma_run() {
+  local last_status=$1; shift
+  _shellllm_route "$@" || return $?
+  set -- "${_shellllm_route_args[@]}"
+  [[ -n $_shellllm_route_url ]] && local -x SHELLLM_BASE_URL=$_shellllm_route_url
+  [[ -z $_shellllm_route_url ]] && { _shellllm_autostart || return $?; }
   local cmd
-  cmd=$(${=SHELLLM_COMMA} "$@") || return $?
+  cmd=$(_shellllm_with_ctx $last_status ${=SHELLLM_COMMA} "$@") || return $?
   [[ -n $cmd ]] && print -z -- "$cmd"
+}
+
+function ,() {
+  _shellllm_comma_run $? "$@"
+}
+
+# ─── `,,` — fix the previous command (`, --fix`). Uses the terminal-
+# context ladder (on at `cmd` by default; SHELLLM_SHELL_CONTEXT=off
+# disables it and `,,` with it).
+function ,,() {
+  _shellllm_comma_run $? --fix "$@"
 }
 
 # ─── `?` — answer. `noglob` is required because `?` is a zsh glob char.
 function _shellllm_ask_fn() {
-  ${=SHELLLM_ASK} "$@"
+  local __last_status=$?
+  _shellllm_route "$@" || return $?
+  set -- "${_shellllm_route_args[@]}"
+  [[ -n $_shellllm_route_url ]] && local -x SHELLLM_BASE_URL=$_shellllm_route_url
+  [[ -z $_shellllm_route_url ]] && { _shellllm_autostart || return $?; }
+  _shellllm_with_ctx $__last_status ${=SHELLLM_ASK} "$@"
 }
 alias '?'='noglob _shellllm_ask_fn'
 
@@ -103,7 +225,8 @@ function _shellllm_find_gguf() {
 }
 
 function _shellllm_server_up() {
-  curl -fsS -m 1 "http://127.0.0.1:${SHELLLM_PORT}/health" >/dev/null 2>&1
+  local port="${1:-$SHELLLM_PORT}"
+  curl -fsS -m 1 "http://127.0.0.1:${port}/health" >/dev/null 2>&1
 }
 
 function _shellllm_embed_up() {
@@ -138,9 +261,9 @@ function _shellllm_list_tiers() {
     desc="${_SHELLLM_TIER_DESC[$tier]}"
     gguf=$(_shellllm_find_gguf "$repo")
     if [[ -f $gguf ]]; then
-      print -- "  ${_G}✓${_N} ${_C}${tier}${_N}   $desc"
+      print -- "  ${_G}✓${_N} ${_C}${tier}${_N} ${_D}:${_SHELLLM_TIER_PORT[$tier]}${_N}   $desc"
     else
-      print -- "  ${_R}✗${_N} ${_C}${tier}${_N}   $desc"
+      print -- "  ${_R}✗${_N} ${_C}${tier}${_N} ${_D}:${_SHELLLM_TIER_PORT[$tier]}${_N}   $desc"
       print -- "      ${_D}huggingface-cli download $repo${_N}"
     fi
   done
@@ -149,13 +272,12 @@ function _shellllm_list_tiers() {
 # ─── `??` — start (or stop / list / status) the local llama-server.
 #
 #   ??                       start the default tier (balanced)
-#   ?? --start fast          start a specific tier
-#   ?? --start balanced
-#   ?? --start smart
+#   ?? --start fast          start a tier on its own port (tiers can
+#   ?? --start smart         run side by side; `, --fast` etc. routes)
 #   ?? --model PATH          start with an explicit gguf
-#   ?? --list                show tiers and which are downloaded
-#   ?? --status              up/down
-#   ?? --stop                kill the server
+#   ?? --list                show tiers, ports, and which are downloaded
+#   ?? --status              which tiers/servers are up
+#   ?? --stop [tier]         kill the default server, or one tier's
 #
 # If a tier isn't downloaded, you get a copy-pasteable
 # `huggingface-cli download` line.
@@ -245,22 +367,39 @@ function _shellllm_start() {
         return 0 ;;
       --list-embed) _shellllm_list_embed_tiers; return 0 ;;
       --stop)
-        pkill -f "llama-server.*--port ${SHELLLM_PORT}" \
-          && echo "stopped" || echo "(nothing to stop)"
+        local stop_port="$SHELLLM_PORT" stop_what="default"
+        if [[ -n "${2:-}" && -n "${_SHELLLM_TIER_PORT[${2:-_}]:-}" ]]; then
+          stop_port="${_SHELLLM_TIER_PORT[$2]}"
+          stop_what="$2"
+        fi
+        pkill -f "llama-server.*--port ${stop_port}" \
+          && echo "stopped ${stop_what} (:${stop_port})" \
+          || echo "(nothing to stop on :${stop_port})"
         return 0 ;;
       --status)
-        if _shellllm_server_up; then
-          echo "up   → http://127.0.0.1:${SHELLLM_PORT}"
-        else
-          echo "down → run ?? to start"
+        local t p any=0
+        for t in "${_SHELLLM_TIER_ORDER[@]}"; do
+          p="${_SHELLLM_TIER_PORT[$t]}"
+          if _shellllm_server_up "$p"; then
+            echo "up   ${t} → http://127.0.0.1:${p}"
+            any=1
+          fi
+        done
+        if (( ! any )); then
+          if _shellllm_server_up; then
+            echo "up   → http://127.0.0.1:${SHELLLM_PORT}"
+          else
+            echo "down → run ?? to start"
+          fi
         fi
         return 0 ;;
       --list|-l) _shellllm_list_tiers; return 0 ;;
       --help|-h)
         print -- "?? — start the local llama-server"
         print -- "  ?? [--start <tier>] [--model PATH]"
-        print -- "  ?? --list | --status | --stop"
+        print -- "  ?? --list | --status | --stop [tier]"
         print -- "  ?? --start-embed <tier> | --status-embed | --stop-embed | --list-embed"
+        print -- "  per-call routing: , --fast …  /  ? --smart …  (tier must be up)"
         _shellllm_list_tiers
         print
         _shellllm_list_embed_tiers
@@ -274,16 +413,6 @@ function _shellllm_start() {
     print -u2 -- "?? unknown tier: $tier"
     _shellllm_list_tiers >&2
     return 1
-  fi
-
-  if _shellllm_server_up; then
-    if [[ -n $tier || -n $model ]]; then
-      print -u2 -- "?? llama-server is already up. To switch:"
-      print -u2 -- "  ?? --stop && ?? --start ${tier:-…}"
-      return 1
-    fi
-    echo "llama-server already running on :${SHELLLM_PORT}"
-    return 0
   fi
 
   local extra_args=""
@@ -324,27 +453,43 @@ function _shellllm_start() {
     return 1
   fi
 
-  mkdir -p "$(dirname "$SHELLLM_LOG")"
+  # Tiers bind to their own ports so several can serve side by side
+  # (`, --fast` / `? --smart` route per call). Explicit --model and env
+  # fallbacks stay on the default port.
+  local port="$SHELLLM_PORT"
+  [[ -n $tier ]] && port="${_SHELLLM_TIER_PORT[$tier]}"
+
+  if _shellllm_server_up "$port"; then
+    echo "llama-server already running on :${port}${tier:+ (tier $tier)}"
+    echo "  to replace it:  ?? --stop${tier:+ $tier} && ?? --start ${tier:-…}"
+    return 0
+  fi
+
+  local log="$SHELLLM_LOG"
+  [[ "$port" != "$SHELLLM_PORT" ]] && log="${SHELLLM_LOG}.${port}"
+
+  mkdir -p "$(dirname "$log")"
   echo "starting llama-server"
   [[ -n $tier ]] && echo "  tier  : $tier"
   echo "  model : $model"
+  echo "  port  : $port"
   [[ -n $extra_args ]] && echo "  extra : $extra_args"
-  echo "  log   : $SHELLLM_LOG"
+  echo "  log   : $log"
 
   nohup llama-server \
     -m "$model" \
     -c "$SHELLLM_CTX" \
     -ngl "$SHELLLM_NGL" \
     --host 127.0.0.1 \
-    --port "$SHELLLM_PORT" \
+    --port "$port" \
     ${=extra_args} \
-    >"$SHELLLM_LOG" 2>&1 &
+    >"$log" 2>&1 &
   disown
 
   printf "  waiting"
   local i
   for i in {1..120}; do
-    if _shellllm_server_up; then
+    if _shellllm_server_up "$port"; then
       echo " ready (${i}s)"
       return 0
     fi
@@ -354,8 +499,8 @@ function _shellllm_start() {
 
   print -u2 -- ""
   print -u2 -- "?? still not ready after 120s. what to do:"
-  print -u2 -- "  1. tail -50 $SHELLLM_LOG"
-  print -u2 -- "  2. lsof -iTCP:${SHELLLM_PORT} -sTCP:LISTEN"
+  print -u2 -- "  1. tail -50 $log"
+  print -u2 -- "  2. lsof -iTCP:${port} -sTCP:LISTEN"
   print -u2 -- "  3. if log says 'unknown option --spec-type': brew upgrade llama.cpp"
   return 1
 }

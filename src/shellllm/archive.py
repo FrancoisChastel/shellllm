@@ -33,7 +33,8 @@ import os
 import re
 import sqlite3
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -396,11 +397,23 @@ class Archive:
 
     # ── Internals ------------------------------------------------------
 
-    def _conn(self) -> sqlite3.Connection:
+    @contextmanager
+    def _conn(self) -> Iterator[sqlite3.Connection]:
+        """Yield a connection inside a transaction, then *close* it.
+
+        ``with sqlite3.connect(...)`` alone only scopes the transaction —
+        the underlying connection (3 fds in WAL mode: db, -wal, -shm)
+        stays open until GC. Under the test suite that exhausted the
+        default macOS fd limit, so we close deterministically.
+        """
         conn = sqlite3.connect(self.path)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        return conn
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
 
 # ── Helpers --------------------------------------------------------------
