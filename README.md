@@ -54,7 +54,9 @@ From source: jump to [Install from source](#install-from-source).
 
 `,` and `?` are **conversational** — each terminal pane keeps its own thread. Type `, the same but with json output` and the model knows what "the same" means. After 30 min idle the thread auto-rotates so a forgotten tab doesn't bleed stale context.
 
-`?` has tools: read files (filesystem-gated), DuckDuckGo search, fetch URL. Force web-first with `? --web <q>`.
+`,,` (alias for `, --fix`) repairs whatever just failed: it sends the previous command, its exit status, and — if you've opted in — recent output, and proposes corrected commands through the same picker. Needs [terminal context](#terminal-context-opt-in) enabled.
+
+`?` has tools: read files (filesystem-gated), DuckDuckGo search, fetch URL. Force web-first with `? --web <q>`. It's also pipe-friendly — `make 2>&1 | ? what broke` turns the piped output into context.
 
 `???` is the durable layer. Bare queries hit the archive of every past session (BM25; semantic if you've added embeddings). Flags pin long-term facts that get injected into every `?` system prompt.
 
@@ -85,6 +87,18 @@ huggingface-cli download unsloth/Qwen3-Coder-Next-GGUF
 
 `??` finds the GGUF inside your HuggingFace cache — no path config required.
 
+Each tier binds to its own port (`fast` :8091, `balanced` :8080, `smart` :8093), so tiers can serve **side by side** — and a single call can be routed to whichever fits:
+
+```sh
+?? --start fast                 # fast tier up, alongside balanced
+, --fast rename all .jpeg to .jpg    # this one call uses the fast tier
+? --smart why is my Makefile rebuilding everything   # this one, the smart tier
+?? --status                     # which tiers are up
+?? --stop fast                  # stop just that one
+```
+
+Don't want to babysit the server at all? `export SHELLLM_AUTOSTART=1` and `,` / `?` bring the default tier up on demand the first time you use them.
+
 ## Sessions
 
 Each pane × command gets a sticky JSONL session at `~/.cache/shellllm/sessions/`. Pane identity is `TERM_SESSION_ID` (Terminal.app / iTerm) → `TMUX_PANE` → `WINDOWID` → `$PPID`, first one that resolves.
@@ -101,6 +115,34 @@ Each pane × command gets a sticky JSONL session at `~/.cache/shellllm/sessions/
 When the conversation crosses 80% of `SHELLLM_CTX`, older turns are auto-summarized into a single `<summary-so-far>` block by the same local model; the most recent 4 stay verbatim.
 
 Every expired or `--new`'d session flows into `~/.cache/shellllm/archive.db` (sqlite + FTS5) so `???` can search across panes and days.
+
+## Terminal context (opt-in)
+
+The terminal knows what just happened — shellllm can use it, but only if you say so. One env var, a ladder of levels, **off by default**:
+
+```sh
+export SHELLLM_SHELL_CONTEXT=cmd        # previous command + exit status
+export SHELLLM_SHELL_CONTEXT=history    # + last 10 commands
+export SHELLLM_SHELL_CONTEXT=output     # + recent pane output (tmux only)
+```
+
+With it on, references resolve themselves:
+
+```sh
+$ git push origin amin
+error: src refspec amin does not match any
+$ ,,                              # proposes: git push origin main
+$ ? why did that fail             # the model sees the command and its exit status
+```
+
+How it stays private:
+
+- **Local-first**: with a local model, nothing leaves the machine anyway. The ladder matters when you point `SHELLLM_BASE_URL` at a hosted API.
+- **Redaction**: captures pass through a secret scrubber (`KEY=…` assignments, `Bearer` headers, AWS/GitHub/Slack/Stripe-shaped tokens, JWTs) before the model sees them. Git SHAs survive — they're useful.
+- **Per-call env, never exported**: the zsh layer passes captures as one-shot environment for the single invocation; nothing lingers in your shell.
+- **Both sides enforce the ladder**: zsh won't capture above your level, and the Python side independently re-checks it.
+- **Ephemeral**: context blocks are rebuilt per turn and never persisted into sessions or the archive.
+- `--no-ctx` skips injection for one call; piped stdin (`cmd | ? …`) is its own explicit consent and works regardless of the ladder.
 
 ## Semantic recall (optional)
 
@@ -146,7 +188,7 @@ Every file read through `?` goes through `safe_fs.safe_read`. Four rules, all en
 Reads cap at 1 MB and use `O_NOFOLLOW` as a belt against a resolve-then-open symlink race.
 
 ```sh
-pytest -v   # 197 tests; 38 dedicated to symlinks, traversal, denylist, lookalikes, truncation
+pytest -v   # 257 tests; 38 dedicated to symlinks, traversal, denylist, lookalikes, truncation
 ```
 
 ## Configuration
@@ -156,7 +198,12 @@ pytest -v   # 197 tests; 38 dedicated to symlinks, traversal, denylist, lookalik
 | `SHELLLM_BASE_URL` | `http://127.0.0.1:8080` | llama-server (or hosted) endpoint |
 | `SHELLLM_API_KEY` | — | Bearer auth for chat — set when pointing at a hosted API |
 | `SHELLLM_MODEL` | `local` | Model id passed in chat requests (override per provider) |
-| `SHELLLM_PORT` | `8080` | Server port |
+| `SHELLLM_PORT` | `8080` | Server port (default route + `balanced` tier) |
+| `SHELLLM_PORT_FAST` | `8091` | `fast` tier port |
+| `SHELLLM_PORT_BALANCED` | `$SHELLLM_PORT` | `balanced` tier port |
+| `SHELLLM_PORT_SMART` | `8093` | `smart` tier port |
+| `SHELLLM_SHELL_CONTEXT` | unset (off) | `cmd` / `history` / `output` — terminal-context ladder |
+| `SHELLLM_AUTOSTART` | unset | `1` to auto-start the default tier when `,` / `?` find it down |
 | `SHELLLM_NGL` | `99` | GPU offload layers |
 | `SHELLLM_CTX` | `32768` | Context window (tokens) |
 | `SHELLLM_TIMEOUT` | `120` | HTTP timeout (seconds) |
@@ -271,6 +318,7 @@ src/shellllm/
 ├── safe_fs.py       filesystem hard wall
 ├── client.py        OpenAI-compatible chat HTTP client (Bearer auth opt-in)
 ├── context.py       date/OS/timezone prelude
+├── shell_context.py opt-in terminal context: ladder, redaction, piped stdin
 └── web.py           stdlib DuckDuckGo scraper + fetch_url with SSRF guard
 ```
 
