@@ -85,7 +85,9 @@ def chat(
         )
     except httpx.ConnectError as exc:
         raise LlamaServerError(
-            f"can't reach llama-server at {base_url}\n  what to do: run `??` to start it"
+            f"can't reach llama-server at {base_url}\n"
+            "  what to do: run `??` to start it "
+            "(or `export SHELLLM_AUTOSTART=1` to start on demand)"
         ) from exc
     except httpx.ReadTimeout as exc:
         raise LlamaServerError(f"llama-server timed out after {DEFAULT_TIMEOUT}s") from exc
@@ -182,7 +184,9 @@ def chat_stream(
                     finish_reason = choice["finish_reason"]
     except httpx.ConnectError as exc:
         raise LlamaServerError(
-            f"can't reach llama-server at {base_url}\n  what to do: run `??` to start it"
+            f"can't reach llama-server at {base_url}\n"
+            "  what to do: run `??` to start it "
+            "(or `export SHELLLM_AUTOSTART=1` to start on demand)"
         ) from exc
     except httpx.ReadTimeout as exc:
         raise LlamaServerError("llama-server stream timed out") from exc
