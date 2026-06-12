@@ -15,6 +15,12 @@
 : ${SHELLLM_CTX:=32768}
 : ${SHELLLM_LOG:=$HOME/.cache/shellllm/llama-server.log}
 : ${SHELLLM_EMBED_LOG:=$HOME/.cache/shellllm/llama-embed.log}
+# Terminal-context ladder (see below). Defaults to `cmd` — previous
+# command + exit status — which is what makes `,,` and "why did that
+# fail" work out of the box. Local-first means this never leaves the
+# machine unless you point SHELLLM_BASE_URL at a hosted API; set it to
+# `off` to disable capture entirely.
+: ${SHELLLM_SHELL_CONTEXT:=cmd}
 
 # ─── Tier registry ──────────────────────────────────────────────────────
 #
@@ -72,10 +78,10 @@ _SHELLLM_EMBED_ORDER=(tiny bge nomic)
 
 # ─── terminal context (opt-in privacy ladder) ──────────────────────────
 #
-# SHELLLM_SHELL_CONTEXT=off|cmd|history|output   (default: off)
+# SHELLLM_SHELL_CONTEXT=off|cmd|history|output   (default: cmd)
 #
-#   off       nothing captured (default)
-#   cmd       previous command + exit status
+#   off       nothing captured
+#   cmd       previous command + exit status (default)
 #   history   + last 10 commands
 #   output    + recent pane output (tmux only)
 #
@@ -100,6 +106,9 @@ function _shellllm_with_ctx() {
   if [[ $level == output && -n ${TMUX:-} ]]; then
     out="$(command tmux capture-pane -p -S -60 2>/dev/null)"
   fi
+  # The level rides along explicitly: it may be a plain (unexported)
+  # shell variable, and the Python side re-checks it from the env.
+  SHELLLM_SHELL_CONTEXT="$level" \
   SHELLLM_LAST_STATUS="$last_status" \
   SHELLLM_LAST_CMD="$last_cmd" \
   SHELLLM_RECENT_HISTORY="$hist" \
@@ -169,8 +178,9 @@ function ,() {
   _shellllm_comma_run $? "$@"
 }
 
-# ─── `,,` — fix the previous command (`, --fix`). Needs the terminal-
-# context ladder enabled: export SHELLLM_SHELL_CONTEXT=cmd (or higher).
+# ─── `,,` — fix the previous command (`, --fix`). Uses the terminal-
+# context ladder (on at `cmd` by default; SHELLLM_SHELL_CONTEXT=off
+# disables it and `,,` with it).
 function ,,() {
   _shellllm_comma_run $? --fix "$@"
 }

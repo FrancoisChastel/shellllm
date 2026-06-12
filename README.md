@@ -54,7 +54,7 @@ From source: jump to [Install from source](#install-from-source).
 
 `,` and `?` are **conversational** — each terminal pane keeps its own thread. Type `, the same but with json output` and the model knows what "the same" means. After 30 min idle the thread auto-rotates so a forgotten tab doesn't bleed stale context.
 
-`,,` (alias for `, --fix`) repairs whatever just failed: it sends the previous command, its exit status, and — if you've opted in — recent output, and proposes corrected commands through the same picker. Needs [terminal context](#terminal-context-opt-in) enabled.
+`,,` (alias for `, --fix`) repairs whatever just failed: it sends the previous command, its exit status, and — at higher [terminal context](#terminal-context) levels — recent output, and proposes corrected commands through the same picker.
 
 `?` has tools: read files (filesystem-gated), DuckDuckGo search, fetch URL. Force web-first with `? --web <q>`. It's also pipe-friendly — `make 2>&1 | ? what broke` turns the piped output into context.
 
@@ -116,17 +116,18 @@ When the conversation crosses 80% of `SHELLLM_CTX`, older turns are auto-summari
 
 Every expired or `--new`'d session flows into `~/.cache/shellllm/archive.db` (sqlite + FTS5) so `???` can search across panes and days.
 
-## Terminal context (opt-in)
+## Terminal context
 
-The terminal knows what just happened — shellllm can use it, but only if you say so. One env var, a ladder of levels, **off by default**:
+The terminal knows what just happened — shellllm uses it, at a level you control. One env var, a ladder of levels:
 
 ```sh
-export SHELLLM_SHELL_CONTEXT=cmd        # previous command + exit status
+export SHELLLM_SHELL_CONTEXT=off        # capture nothing
+export SHELLLM_SHELL_CONTEXT=cmd        # previous command + exit status (default)
 export SHELLLM_SHELL_CONTEXT=history    # + last 10 commands
 export SHELLLM_SHELL_CONTEXT=output     # + recent pane output (tmux only)
 ```
 
-With it on, references resolve themselves:
+References resolve themselves:
 
 ```sh
 $ git push origin amin
@@ -202,7 +203,7 @@ pytest -v   # 257 tests; 38 dedicated to symlinks, traversal, denylist, lookalik
 | `SHELLLM_PORT_FAST` | `8091` | `fast` tier port |
 | `SHELLLM_PORT_BALANCED` | `$SHELLLM_PORT` | `balanced` tier port |
 | `SHELLLM_PORT_SMART` | `8093` | `smart` tier port |
-| `SHELLLM_SHELL_CONTEXT` | unset (off) | `cmd` / `history` / `output` — terminal-context ladder |
+| `SHELLLM_SHELL_CONTEXT` | `cmd` (zsh layer) | `off` / `cmd` / `history` / `output` — terminal-context ladder |
 | `SHELLLM_AUTOSTART` | unset | `1` to auto-start the default tier when `,` / `?` find it down |
 | `SHELLLM_NGL` | `99` | GPU offload layers |
 | `SHELLLM_CTX` | `32768` | Context window (tokens) |

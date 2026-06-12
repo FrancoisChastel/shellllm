@@ -6,13 +6,17 @@ environment variables. This module turns those into a small, redacted
 system block — so `, why did that fail` and `? what does that error
 mean` work without re-typing anything.
 
-Privacy ladder — everything is off unless the user sets
-``SHELLLM_SHELL_CONTEXT``:
+Privacy ladder — ``SHELLLM_SHELL_CONTEXT``:
 
-    off       (default) nothing is captured or injected
+    off       nothing is captured or injected
     cmd       previous command + exit status
     history   + last few commands
     output    + recent pane output (tmux only)
+
+This module treats an *absent* variable as ``off``; the stock zsh layer
+defaults the ladder to ``cmd`` and passes the level down per
+invocation, so out of the box `,,` and "why did that fail" just work.
+``SHELLLM_SHELL_CONTEXT=off`` disables capture entirely.
 
 Both the zsh side (capture) and this module (injection) enforce the
 ladder independently, so a stale exported variable can never leak past
@@ -121,7 +125,7 @@ def build_shell_context_block(env: Mapping[str, str] | None = None) -> str:
 
     return "\n".join(
         [
-            "Terminal context (the user opted in to sharing this; secrets are redacted):",
+            "Terminal context (shared per the user's configured level; secrets are redacted):",
             *parts,
             "Use this to resolve references like 'that command', 'the error', or 'why did it fail'.",
         ]

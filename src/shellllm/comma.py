@@ -332,9 +332,9 @@ def main() -> int:
             _err.print(f"{_RED}, error:{_RESET} --fix needs terminal context; drop --no-ctx")
             return 2
         if not build_shell_context_block():
-            _err.print(f"{_RED}, error:{_RESET} --fix needs terminal context, which is off.")
-            _err.print("  what to do:  export SHELLLM_SHELL_CONTEXT=cmd   (or: history, output)")
-            _err.print("  then re-run the failing command and `,,` again.")
+            _err.print(f"{_RED}, error:{_RESET} --fix needs terminal context, and none arrived.")
+            _err.print("  if you set SHELLLM_SHELL_CONTEXT=off, re-enable it: export SHELLLM_SHELL_CONTEXT=cmd")
+            _err.print("  otherwise re-source zsh/shellllm.zsh (older versions didn't capture).")
             return 2
         repair = (
             "Diagnose the previous command using the terminal context "
