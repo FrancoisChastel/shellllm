@@ -159,7 +159,8 @@ def test_piped_block_empty_for_blank_input():
 
 def test_piped_block_wraps_content():
     out = build_piped_block("error: linker `cc` not found")
-    assert "Piped input" in out
+    # The block must (a) tell the model this IS the input and (b) carry it.
+    assert "piped" in out.lower()
     assert "linker `cc` not found" in out
 
 

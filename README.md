@@ -210,7 +210,7 @@ Every file read through `?` goes through `safe_fs.safe_read`. Four rules, all en
 Reads cap at 1 MB and use `O_NOFOLLOW` as a belt against a resolve-then-open symlink race.
 
 ```sh
-pytest -v   # 256 tests; 38 dedicated to symlinks, traversal, denylist, lookalikes, truncation
+pytest -v   # 257 tests; 38 dedicated to symlinks, traversal, denylist, lookalikes, truncation
 ```
 
 ## Configuration

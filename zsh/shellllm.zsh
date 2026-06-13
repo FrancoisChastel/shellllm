@@ -88,6 +88,29 @@ _SHELLLM_EMBED_ORDER=(tiny bge nomic)
 # Captured values are passed as per-invocation environment — nothing is
 # exported into the shell, and the Python side re-checks the level and
 # redacts secret-shaped strings before anything reaches the model.
+#
+# Previous command is read from zsh's `$history` array — robust across
+# HIST_IGNORE_DUPS / SHARE_HISTORY, no preexec hook needed. Exit status
+# of the previous command is captured by a precmd hook, since `$?` is
+# only meaningful inside a hook that runs immediately after the command.
+typeset -g _SHELLLM_PREV_STATUS=0
+
+function _shellllm_precmd() {
+  _SHELLLM_PREV_STATUS=$?
+}
+
+autoload -Uz add-zsh-hook
+add-zsh-hook precmd _shellllm_precmd
+
+# Resolve the previous command from history at call time, inside the
+# `,` / `,,` / `?` functions. `$HISTCMD` is the slot for the CURRENT
+# command (the one that invoked this function), so the previous user
+# command is at `$HISTCMD - 1`.
+function _shellllm_prev_cmd() {
+  local prev="$history[$((HISTCMD-1))]"
+  print -- "${prev#"${prev%%[![:space:]]*}"}"
+}
+
 function _shellllm_with_ctx() {
   local last_status=$1; shift
   local level="${SHELLLM_SHELL_CONTEXT:-off}"
@@ -95,11 +118,8 @@ function _shellllm_with_ctx() {
     "$@"
     return $?
   fi
-  local last_cmd hist="" out=""
-  # The command being executed is already in history, so the *previous*
-  # one is entry -2.
-  last_cmd="$(builtin fc -ln -2 -2 2>/dev/null)"
-  last_cmd="${last_cmd#"${last_cmd%%[![:space:]]*}"}"
+  local last_cmd="$(_shellllm_prev_cmd)"
+  local hist="" out=""
   if [[ $level == history || $level == output ]]; then
     hist="$(builtin fc -ln -11 -2 2>/dev/null)"
   fi
@@ -175,7 +195,7 @@ function _shellllm_comma_run() {
 }
 
 function ,() {
-  _shellllm_comma_run $? "$@"
+  _shellllm_comma_run $_SHELLLM_PREV_STATUS "$@"
 }
 
 # ─── `,,` — the comma that knows what just happened. Doubling the glyph
@@ -184,7 +204,7 @@ function ,() {
 # command" (`, --fix`). The ladder level (SHELLLM_SHELL_CONTEXT,
 # default `cmd`) controls how much context rides along.
 function ,,() {
-  local __last_status=$?
+  local __last_status=$_SHELLLM_PREV_STATUS
   if (( $# )); then
     _shellllm_comma_run $__last_status --ctx "$@"
   else
@@ -194,7 +214,7 @@ function ,,() {
 
 # ─── `?` — answer. `noglob` is required because `?` is a zsh glob char.
 function _shellllm_ask_fn() {
-  local __last_status=$?
+  local __last_status=$_SHELLLM_PREV_STATUS
   _shellllm_route "$@" || return $?
   set -- "${_shellllm_route_args[@]}"
   [[ -n $_shellllm_route_url ]] && local -x SHELLLM_BASE_URL=$_shellllm_route_url
