@@ -75,6 +75,7 @@ class Shellllm < Formula
 
     # Ship the zsh integration file at a stable, well-known location.
     pkgshare.install "zsh/shellllm.zsh"
+    pkgshare.install "bash/shellllm.bash"
   end
 
   def caveats
@@ -121,5 +122,6 @@ class Shellllm < Formula
 
     # Confirm the zsh integration shipped where caveats say it does.
     assert_predicate pkgshare/"shellllm.zsh", :exist?
+    assert_predicate pkgshare/"shellllm.bash", :exist?
   end
 end
