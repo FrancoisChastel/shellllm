@@ -147,6 +147,15 @@ def build_piped_block(text: str) -> str:
     truncated = len(text) > MAX_PIPED_CHARS
     if truncated:
         text = text[-MAX_PIPED_CHARS:]
-    header = "Piped input (the user piped this into the command"
-    header += f"; truncated to the last {MAX_PIPED_CHARS} characters):" if truncated else "):"
-    return f"{header}\n{redact(text)}"
+    # The model has to be told this IS the input — otherwise the local
+    # 27B-class models cheerfully say "I don't see any input attached"
+    # even with the data right there in the system block.
+    trunc_note = f" (truncated to the last {MAX_PIPED_CHARS} characters)" if truncated else ""
+    return (
+        f"The user piped data into the command{trunc_note}. "
+        f"This IS the input to answer their question against — treat it "
+        f"as the primary context. Do not ask the user to share it.\n"
+        f"--- piped input begins ---\n"
+        f"{redact(text)}\n"
+        f"--- piped input ends ---"
+    )

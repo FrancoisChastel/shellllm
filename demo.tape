@@ -1,20 +1,20 @@
 # shellllm — flow demo
 #
-# Tells a 60-second story: you're working in a directory, you hit a
-# command you don't quite remember, you ask the model about it, you
-# refine, you move on, and later you recall a thing you asked earlier
-# — all without leaving your zsh prompt.
+# A ~70-second story: you're working in a directory of build artifacts.
+# You ask for a command instead of googling (`,`), you typo something
+# and fix it with two keystrokes (`,,`), you ask a question without
+# breaking flow (`?`), you pipe a real error in, you pin a fact, and
+# you recall something you asked days ago (`???`) — all at the prompt.
 #
 # Render
 #   brew install vhs                           # one-time, ~30s
 #   ?? --start balanced                        # llama-server must be running
 #   vhs demo.tape                              # writes demo.gif
 #
-# The Hide block at the top sets up a sandbox in /tmp/shellllm-demo with
-# a few sized files (so `du` has something to show) and seeds the
-# archive with one prior conversation about git stash (so the `???`
-# recall later finds a real, pre-existing hit). Everything else is the
-# tool acting in its native environment.
+# The Hide block sets up a sandbox in /tmp/shellllm-demo with sized
+# files (so `du` has output), a deliberately broken build.py (for the
+# piping beat), and seeds the archive with one prior conversation about
+# git stash (so the `???` recall finds a real, pre-existing hit).
 
 Output demo.gif
 
@@ -38,7 +38,12 @@ Set CursorBlink true
 # Fresh sandbox, isolated archive/memory paths so we don't touch the
 # user's real cache while recording.
 Hide
-Type "export SHELLLM_ARCHIVE_DB=/tmp/shellllm-demo/archive.db SHELLLM_MEMORY_FILE=/tmp/shellllm-demo/memory.jsonl SHELLLM_SESSIONS_DIR=/tmp/shellllm-demo/sessions"
+# Self-contained: the VHS zsh is bare, so wire up the CLIs and glyphs
+# from the repo checkout we're rendering in.
+Type "export PATH=$PWD/.venv/bin:$PATH && source ./zsh/shellllm.zsh"
+Enter
+Sleep 200ms
+Type "export SHELLLM_ARCHIVE_DB=/tmp/shellllm-demo/archive.db SHELLLM_MEMORY_FILE=/tmp/shellllm-demo/memory.jsonl SHELLLM_SESSIONS_DIR=/tmp/shellllm-demo/sessions SHELLLM_SHELL_CONTEXT=cmd"
 Enter
 Sleep 100ms
 Type "rm -rf /tmp/shellllm-demo && mkdir -p /tmp/shellllm-demo/sessions && cd /tmp/shellllm-demo"
@@ -53,11 +58,11 @@ Type "head -c 410000 </dev/urandom > coverage-report.html"
 Enter
 Type "head -c 180000 </dev/urandom > webpack-stats.json"
 Enter
-Type "touch -d '2 hours ago' release-build.tar.gz coverage-report.html"
+# A build script that fails with a real traceback, for the piping beat.
+Type "echo 'import tomlib' > build.py"
 Enter
 # Seed one prior shellllm session into the archive so `??? git` finds
-# something later in the demo. We use a heredoc to keep the quoting
-# manageable inside the Type command.
+# something later in the demo. Heredoc keeps the quoting manageable.
 Type@10ms "python3 - <<'PY'"
 Enter
 Type@10ms "from shellllm.archive import Archive"
@@ -67,6 +72,18 @@ Enter
 Type@10ms "PY"
 Enter
 Sleep 400ms
+# Warm the model with one direct chat call so the first VISIBLE beat
+# doesn't pay cold-start latency (15-20s on this 27B Q4). Heredoc to
+# avoid VHS's parser choking on JSON braces / escaped quotes.
+Type@10ms "python3 - <<'PY'"
+Enter
+Type@10ms "from shellllm.client import chat"
+Enter
+Type@10ms "chat([{'role':'user','content':'hi'}], max_tokens=4)"
+Enter
+Type@10ms "PY"
+Enter
+Sleep 12s
 Type "clear"
 Enter
 Sleep 200ms
@@ -78,31 +95,40 @@ Show
 Type ", find the five largest files in this directory"
 Sleep 600ms
 Enter
-# Wait for the model + fzf to render the candidate picker.
-Sleep 6s
+# Wait until fzf paints its prompt — robust against model latency.
+Wait+Screen@30s /enter: drop on prompt/
+Sleep 600ms
 # Accept the highlighted proposal — `print -z` drops it on the prompt.
 Enter
-Sleep 800ms
+Sleep 1s
 # Run it.
 Enter
 Sleep 3s
 
-# ── Beat 2 — refine via the sticky session ──────────────────────────────
-# Same `,` thread in this pane: the model remembers the prior proposal.
-# "the same but only ones modified today" works because it has
-# context, exactly like a real conversation.
-Type ", the same but only ones modified in the last hour"
-Sleep 600ms
+# ── Beat 2 — `,,` fixes the previous command ────────────────────────────
+# A classic transposition. The shell prints "command not found" with
+# exit status 127. Doubling the glyph brings the terminal context: bare
+# `,,` sees the failed command + status and proposes the fix.
+Type "gti status"
+Sleep 500ms
 Enter
-Sleep 6s
-Enter
+Sleep 1500ms
+Type ",,"
 Sleep 800ms
 Enter
+Wait+Screen@30s /enter: drop on prompt/
+Sleep 600ms
+# Accept the fixed command, run it.
+Enter
+Sleep 1s
+Enter
 Sleep 3s
+Type "clear"
+Enter
+Sleep 400ms
 
 # ── Beat 3 — `?` answers without breaking the flow ──────────────────────
-# Two files made the cut. Now you need to commit, but `git stash` came
-# to mind and you blanked. Ask the model in-band, get an answer.
+# `git stash` came to mind and you blanked. Ask in-band, get an answer.
 Type "? in markdown and 3 lines max, what does git stash do"
 Sleep 600ms
 Enter
@@ -110,25 +136,25 @@ Enter
 # with the local model.
 Sleep 14s
 
-# ── Beat 4 — pin a long-term fact ───────────────────────────────────────
+# ── Beat 4 — pipe a real error into `?` ─────────────────────────────────
+# The build fails. Pipe the traceback in; piped stdin becomes context.
+Type "python3 build.py 2>&1 | ? one line: what is broken here"
+Sleep 600ms
+Enter
+Sleep 14s
+Type "clear"
+Enter
+Sleep 400ms
+
+# ── Beat 5 — pin a long-term fact ───────────────────────────────────────
 # While you're here, pin something. Now every `?` carries it.
 Type "??? --add this project uses pnpm and ships via release-build.tar.gz"
 Sleep 500ms
 Enter
 Sleep 2s
 
-# ── Beat 5 — start a fresh `?` thread so the prior turn lands in the archive
-# `--new` archives the current session — perfect mid-flow segue.
-Type "? --new"
-Sleep 500ms
-Enter
-Sleep 2s
-Type "clear"
-Enter
-Sleep 400ms
-
 # ── Beat 6 — `???` recalls across past sessions ─────────────────────────
-# "What was that git thing I asked earlier?" Bare query → FTS5 search
+# "What was that git thing I asked the other day?" Bare query → search
 # across every archived conversation in this pane and others.
 Type "??? git stash"
 Sleep 500ms

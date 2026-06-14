@@ -4,13 +4,15 @@ Conventions for AI coding assistants (Claude Code, Cursor, Aider, etc.) working 
 
 ## What this project is
 
-`shellllm` exposes three commands to zsh, backed by a local `llama-server`:
+`shellllm` exposes four glyph commands to zsh, backed by a local `llama-server`:
 
-- `,` proposes shell commands; never executes.
-- `?` answers questions through a narrow read-only agent.
-- `??` starts/stops/lists the backend.
+- `,` proposes shell commands; never executes. No terminal context.
+- `,,` the same with terminal context; bare `,,` fixes the previous command. Still never executes.
+- `?` answers questions through a narrow read-only agent. Pipe-friendly (`cmd | ? …`).
+- `??` starts/stops/lists the backend; tiers bind to ports and can serve side by side.
+- `???` memory & recall: bare query searches archived sessions, flags pin long-term facts.
 
-Two things matter more than anything else: **the filesystem hard wall** and the **comma never executes** invariant. Everything else is negotiable.
+Three things matter more than anything else: **the filesystem hard wall**, the **comma never executes** invariant, and the **terminal-context ladder** (`shell_context.py`: capture is gated by `SHELLLM_SHELL_CONTEXT`, redacted, per-turn ephemeral, never persisted). Everything else is negotiable.
 
 ## The hard wall
 

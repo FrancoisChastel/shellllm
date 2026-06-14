@@ -11,7 +11,7 @@ The model sees prior user prompts and the JSON it previously emitted,
 so follow-ups like ``, the same but only the running ones`` refine the
 earlier proposal instead of asking from scratch. Sessions share the
 same idle TTL and archive store as ``?`` / ``???``; expired ``,``
-sessions are searchable via ``?: recall``.
+sessions are searchable via ``??? <query>``.
 """
 
 from __future__ import annotations
@@ -113,6 +113,24 @@ def _system_prompt() -> str:
     )
 
 
+def _fix_system_prompt() -> str:
+    """Used by `,,` / `, --fix`. Replaces the regular system prompt."""
+    return (
+        "You are a shell-command REPAIR assistant. The terminal context shows "
+        "a command that just failed (with its exit status and any output). "
+        "Your job: propose 3 to 5 REPLACEMENT commands that, if run, would "
+        "succeed where the original failed. Most failures are typos, missing "
+        "flags, wrong paths, or a forgotten tool — fix those first. The "
+        "FIRST item in your list MUST be your best single-shot guess at what "
+        "the user actually meant. Each entry is a single one-line command + "
+        "a terse note (≤80 chars) explaining the fix. NEVER propose commands "
+        "that merely inspect, list, or explain the failure (no `ls -la`, no "
+        "`echo $?`, no `history`, no `man`, no `pwd`). NEVER include "
+        "`rm -rf`, `sudo`, or other destructive commands. Output must match "
+        "the JSON schema."
+    )
+
+
 def _print_usage(*, to: Any = None) -> None:
     out = to or sys.stdout
     out.write(
@@ -125,7 +143,7 @@ def _print_usage(*, to: Any = None) -> None:
         "       , --fast|--balanced|--smart …   route this call to a tier (zsh)\n"
         "       , --help                        show this message\n"
         "\n"
-        "For facts and cross-session recall, see `?: help`.\n"
+        "For facts and cross-session recall, see `??? --help`.\n"
     )
 
 
@@ -234,6 +252,7 @@ def _build_messages(
     first_turn: bool,
     resumed: bool,
     shell_ctx: bool = False,
+    fix_mode: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Return (messages_to_send, history_to_persist_after).
 
@@ -245,9 +264,15 @@ def _build_messages(
     date = datetime.now().astimezone().strftime("%Y-%m-%d")
 
     system_msgs: list[dict[str, Any]] = [
-        {"role": "system", "content": _system_prompt()},
+        {"role": "system", "content": _fix_system_prompt() if fix_mode else _system_prompt()},
     ]
-    if first_turn or resumed or session.meta.last_pwd != pwd or session.meta.last_date != date:
+    # The cwd-listing context is helpful for "what should I do next"
+    # questions but actively distracting in repair mode — the model
+    # tends to anchor on filenames it sees in `cwd: files…` and propose
+    # commands to operate on them, ignoring the actual failed command.
+    if not fix_mode and (
+        first_turn or resumed or session.meta.last_pwd != pwd or session.meta.last_date != date
+    ):
         system_msgs.append({"role": "system", "content": _context_block()})
 
     # Terminal context is opt-in per call (`--ctx` / `--fix`) and
@@ -341,12 +366,19 @@ def main() -> int:
             )
             _err.print("  otherwise re-source zsh/shellllm.zsh (older versions didn't capture).")
             return 2
-        repair = (
-            "Diagnose the previous command using the terminal context "
-            "(command, exit status, output if present) and propose corrected "
-            "commands that do what the user wanted."
+        # A repair is a one-shot diagnosis of the SHELL state, not a
+        # refinement of the prior `,` thread — continuing the session
+        # would have the model proposing variants of the last question
+        # ("find largest files") instead of the actual fix. Rotate it
+        # into the archive (still searchable via `???`) and start fresh.
+        if not session.is_empty():
+            session.archive_and_reset(archive=archive, embed_fn=_safe_embed)
+        # The system prompt (_fix_system_prompt) already binds the model
+        # to the repair contract — keep the user message minimal so the
+        # terminal context dominates.
+        prompt = (
+            f"Fix the previous command. Hint: {prompt}" if prompt else "Fix the previous command."
         )
-        prompt = f"{repair} Hint from the user: {prompt}" if prompt else repair
 
     if not prompt:
         _print_usage(to=sys.stderr)
@@ -366,6 +398,7 @@ def main() -> int:
         first_turn=first_turn,
         resumed=resumed,
         shell_ctx=shell_ctx,
+        fix_mode=fix_mode,
     )
 
     result = _ask_model(messages)

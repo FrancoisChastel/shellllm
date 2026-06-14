@@ -339,11 +339,12 @@ def run_agent(
             system_msgs.append({"role": "system", "content": ctx_block})
 
     # Piped stdin (`make 2>&1 | ? what broke`) — explicit consent by
-    # construction, so no ladder gate. Per-turn ephemeral like the rest
-    # of the system prefix.
+    # construction, so no ladder gate. We render it *into the user
+    # message* (further down) rather than as a system block: local
+    # 27B-class models reliably ignore system messages telling them
+    # "this is the input", but the same content prepended to the user
+    # turn gets the attention it deserves.
     piped_block = build_piped_block(piped_input)
-    if piped_block:
-        system_msgs.append({"role": "system", "content": piped_block})
 
     # claude-mem context injection: only on a brand-new session, so we
     # don't repeatedly re-paste the same prior observations as the
@@ -372,7 +373,8 @@ def run_agent(
             f"~{estimate_tokens(system_msgs + history)} tokens"
         )
 
-    user_message: dict[str, Any] = {"role": "user", "content": user_prompt}
+    user_content = f"{piped_block}\n\n{user_prompt}" if piped_block else user_prompt
+    user_message: dict[str, Any] = {"role": "user", "content": user_content}
     messages: list[dict[str, Any]] = system_msgs + history + [user_message]
     messages = _maybe_compact(messages)
 

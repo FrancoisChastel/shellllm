@@ -236,8 +236,13 @@ def test_fix_builds_repair_prompt(monkeypatch, capsys, isolated, fake_model, aut
     assert _run(["--fix"], monkeypatch) == 0
     sent = fake_model[0]
     user_msg = next(m["content"] for m in sent if m["role"] == "user")
-    assert "previous command" in user_msg
+    # User message stays minimal — the contract lives in the system prompt.
+    assert "fix" in user_msg.lower()
     system_text = "\n".join(m["content"] for m in sent if m["role"] == "system")
+    # Fix mode swaps the system prompt to the repair-specific one,
+    # pinning the model to REPLACEMENT commands (no inspection).
+    assert "REPLACEMENT" in system_text
+    # Terminal context still rides along.
     assert "git push origin main" in system_text
 
 
@@ -246,6 +251,27 @@ def test_fix_appends_user_hint(monkeypatch, capsys, isolated, fake_model, auto_p
     assert _run(["--fix", "I", "meant", "the", "dev", "branch"], monkeypatch) == 0
     user_msg = next(m["content"] for m in fake_model[0] if m["role"] == "user")
     assert "I meant the dev branch" in user_msg
+
+
+def test_fix_starts_fresh_session(monkeypatch, capsys, isolated, fake_model, auto_pick):
+    """`,,` (--fix) is a one-shot repair, not a refinement of the prior `,` thread.
+
+    Without this, the model would propose variants of the last question
+    instead of the actual fix for the failed command.
+    """
+    _enable_shell_ctx(monkeypatch)
+    # Establish a sticky session from a prior plain `,` turn.
+    _run(["list", "files"], monkeypatch)
+    capsys.readouterr()
+    fake_model.clear()
+
+    _run(["--fix"], monkeypatch)
+    sent = fake_model[0]
+    roles = [m["role"] for m in sent]
+    # Only the new user turn should reach the model — no prior
+    # user/assistant from the `list files` turn.
+    assert roles.count("user") == 1
+    assert roles.count("assistant") == 0
 
 
 def test_redirect_for_ask_remember(monkeypatch, capsys, isolated):
