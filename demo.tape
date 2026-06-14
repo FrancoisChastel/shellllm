@@ -45,7 +45,7 @@ Hide
 Type "export PATH=$PWD/.venv/bin:$PATH && source ./zsh/shellllm.zsh"
 Enter
 Sleep 200ms
-Type "export SHELLLM_ARCHIVE_DB=/tmp/shellllm-demo/archive.db SHELLLM_MEMORY_FILE=/tmp/shellllm-demo/memory.jsonl SHELLLM_SESSIONS_DIR=/tmp/shellllm-demo/sessions SHELLLM_SHELL_CONTEXT=cmd"
+Type "export SHELLLM_ARCHIVE_DB=/tmp/shellllm-demo/archive.db SHELLLM_MEMORY_FILE=/tmp/shellllm-demo/memory.jsonl SHELLLM_SESSIONS_DIR=/tmp/shellllm-demo/sessions SHELLLM_SHELL_CONTEXT=cmd SHELLLM_BASE_URL=http://127.0.0.1:8091"
 Enter
 Sleep 100ms
 Type "rm -rf /tmp/shellllm-demo && mkdir -p /tmp/shellllm-demo/sessions && cd /tmp/shellllm-demo"
@@ -97,11 +97,20 @@ Enter
 Sleep 200ms
 Show
 
-# ── Beat 1 — `, --fast` proposes a command via the fast tier ────────────
-# You're in a directory full of build artifacts. You vaguely remember
-# `du` exists. Ask the model — routed to the fast tier (MoE 3B-active,
-# ~3× faster than balanced).
-Type ", --fast find the five largest files in this directory"
+# ── Beat 0 — spin up the local model ────────────────────────────────────
+# The audience needs to know the LLM lives on your machine. `?? --start
+# fast` puts a llama-server on :8091 with the MoE 3B-active tier — the
+# rest of the demo uses it by default (SHELLLM_BASE_URL points there).
+Type "?? --start fast"
+Sleep 600ms
+Enter
+Sleep 2s
+
+# ── Beat 1 — `,` proposes a command ─────────────────────────────────────
+# You're in a directory of build artifacts. You vaguely remember `du`
+# exists. Ask the model in-band — no flag needed; SHELLLM_BASE_URL is
+# already pointing at the fast tier.
+Type ", find the five largest files in this directory"
 Sleep 600ms
 Enter
 Wait+Screen@30s /enter: drop on prompt/
@@ -111,20 +120,19 @@ Sleep 1s
 Enter
 Sleep 3s
 
-# ── Beat 2 — `,,` fixes the previous command (still on fast) ────────────
-# A real flag typo, the kind people make daily. `--grpe` instead of
-# `--grep`. The shell prints "unknown option" with exit status 129.
-# Bare `,,` brings the terminal context (command + status) and lets the
-# fast tier propose the fix.
-Type "git log --oneline -n 10 --grpe 'fix'"
+# ── Beat 2 — `,,` diagnoses then fixes the previous command ─────────────
+# A real flag typo on `find`. BSD and GNU find both accept `-type`, so
+# the corrected command works on every platform — `,,` diagnoses the
+# typo in one stderr line and proposes the corrected command first.
+Type "find . -tpye f -name '*.py'"
 Sleep 500ms
 Enter
 Sleep 1500ms
-Type ",, --fast"
+Type ",,"
 Sleep 800ms
 Enter
 Wait+Screen@30s /enter: drop on prompt/
-Sleep 600ms
+Sleep 800ms
 Enter
 Sleep 1s
 Enter
@@ -133,10 +141,10 @@ Type "clear"
 Enter
 Sleep 400ms
 
-# ── Beat 3 — `? --fast` for a quick question ────────────────────────────
+# ── Beat 3 — `?` answers a quick question ───────────────────────────────
 # `git stash` came to mind and you blanked. The fast tier handles this
 # in seconds.
-Type "? --fast in markdown and 3 lines max, what does git stash do"
+Type "? in markdown and 3 lines max, what does git stash do"
 Sleep 600ms
 Enter
 Sleep 14s

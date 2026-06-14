@@ -4,19 +4,17 @@
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-> Local LLM at your zsh prompt. Five glyphs, no API key, works offline.
+> A local LLM at your shell prompt. Five glyphs, no account, works offline.
 
-Drop English at your prompt and get a real shell command. Typo something and fix it with two keystrokes. Ask the model a question without breaking flow. Search every past conversation by content. The whole CLI is punctuation — `,` `,,` `?` `??` `???` — because the best terminal UI is the one that fits next to `cd` and `ls`.
+`shellllm` puts a local language model behind a handful of punctuation commands in your shell. Describe what you want in English and get a real shell command back. Mistype something and recover with two keystrokes. Ask a question without leaving the terminal. Search every conversation you've ever had with the tool.
 
-And it knows what just happened in your terminal: the previous command and its exit status ride along (redacted, local, [level-controlled](CONFIGURATION.md#terminal-context)), so "that" and "why did it fail" mean what you think they mean.
+Everything runs against a local [`llama.cpp`](https://github.com/ggerganov/llama.cpp) server — no API keys, no data leaves your machine, no cost per question, available on a plane.
 
 ![shellllm demo](demo.gif)
 
-No API key. No data leaves your machine. Works with WiFi off (except `? --web`).
-
 ## Install
 
-Three steps. Local model, no account.
+Three steps. macOS or Linux, local model, no account required.
 
 ```sh
 # 1. Tool (pulls llama.cpp, fzf, and the CLIs)
@@ -24,47 +22,59 @@ brew install FrancoisChastel/shellllm/shellllm
 echo 'source "$(brew --prefix)/share/shellllm/shellllm.zsh"' >> ~/.zshrc
 exec zsh
 
-# 2. Model (one-time; `pipx install huggingface_hub` if you lack the CLI)
+# 2. Model (one-time download, ~16 GB)
 huggingface-cli download unsloth/Qwen3.6-27B-GGUF
+#  (need huggingface-cli? `pipx install huggingface_hub`)
 
-# 3. Go
-??                                  # start the server (~10s once cached)
+# 3. Run
+??                          # start the local server (~10s once cached)
 , find the five largest files here
 ```
 
-Zero babysitting: `export SHELLLM_AUTOSTART=1` and the first `,` or `?` starts the server for you.
+Don't want to manage the server yourself? `export SHELLLM_AUTOSTART=1` and the first `,` or `?` starts it on demand.
+
+Not on zsh? The Python CLIs (`shellllm-comma`, `shellllm-ask`, `shellllm-recall`) work in bash, fish, or any POSIX shell. See [CONFIGURATION.md#using-shellllm-without-zsh](CONFIGURATION.md#using-shellllm-without-zsh) for a minimal bash adapter.
 
 ## The five commands
 
-| Cmd | What | Example |
+| Command | What it does | Example |
 |---|---|---|
-| `, <english>` | Propose shell commands, pick one in fzf, drop on prompt. Never executes. | `, the five largest files here` |
-| `,, [english]` | Same, but **with terminal context**. Bare `,,` = fix the previous command. | `,,` after a typo'd push |
-| `? <q>` | Ask the model. Streams markdown. Sticky per-pane session. Pipe-friendly. | `? what does git stash do` |
-| `???` | Memory & recall. Bare query searches the archive. Flags pin long-term facts. | `??? --add I prefer ripgrep` |
-| `??` | Start / stop / status the local `llama-server`. | `?? --start fast` |
+| `, <prompt>` | Propose 3–5 shell commands, pick one in fzf, drop on prompt. Never executes. | `, the five largest files here` |
+| `,, [prompt]` | Same, but with terminal context attached. Bare `,,` repairs the previous command. | `,,` after a typo'd command |
+| `? <question>` | Ask the model. Streams markdown, keeps a per-pane conversation. Reads piped input. | `? what does git stash do` |
+| `???` | Memory and recall. Bare query searches the archive; flags pin long-term facts. | `??? --add I prefer ripgrep` |
+| `??` | Start, stop, or check the local `llama-server`. | `?? --start fast` |
 
 A few moves worth knowing:
 
 ```sh
-make 2>&1 | ? what broke         # pipe an error in, get a diagnosis
-?? --start fast                  # multiple tiers run side by side
-, --smart explain this Makefile  # route one call to a specific tier
+make 2>&1 | ? what broke         # pipe an error, get a diagnosis
+?? --start fast                  # two tiers can serve side by side
+, --smart explain this Makefile  # route one call to the bigger model
 ??? --add the project uses pnpm  # pin a fact; every `?` carries it
-??? docker volumes               # bare query = recall across past sessions
+??? docker volumes               # bare query → search past sessions
 ```
 
-That's the whole tour. **For everything else — model tiers, hosted-API setup, terminal-context ladder details, semantic recall, JS rendering for SPAs, the full env-var table, and the filesystem hard wall — see [CONFIGURATION.md](CONFIGURATION.md).**
+That's the whole surface. **For model tiers, hosted-API setup, the terminal-context ladder, semantic recall, JS rendering, the full environment-variable table, and the filesystem hard wall, see [CONFIGURATION.md](CONFIGURATION.md).**
 
-## Why this exists
+## Design
 
-You don't need to ship every "what does git stash do" question to a frontier model. The wifi will be off on the plane and you'll still want a hand. Every `tar -czvf` answer has been in your model's training data for two years. Claude Code is great but it lives in its own window — `cd ~/project && ?` shouldn't require a browser tab.
+A few decisions are load-bearing:
 
-The bet: a local 27B model is roughly equivalent to a frontier model for the questions you ask between `git commit` and `make test`. The wins — privacy, latency, offline availability, $0 per question — are real, every day.
+- **`,` never executes.** The comma proposes commands and drops the chosen one on your prompt line. You confirm with Enter. The model never runs anything on its own.
+- **The filesystem has a hard wall.** `?` can read files, but only inside `$HOME` or `$PWD`, never inside `.ssh`, `.aws`, `.gnupg`, or any other secret-bearing path. Symlinks are canonicalised before containment is checked. Reads cap at 1 MB.
+- **Terminal context is a ladder.** What `shellllm` sees from your terminal — the previous command, its exit status, recent history, recent output — is gated by `SHELLLM_SHELL_CONTEXT`, redacted for secrets, rebuilt per call, and never persisted.
+- **Sessions are sticky per pane, ephemeral per session.** Each terminal pane has its own conversation thread; idle sessions roll into a searchable archive automatically.
+
+## Why local
+
+You don't need a frontier model to remember `tar -czvf`. The questions you ask between `git commit` and `make test` — flag lookups, "what does this command do", "fix my typo" — are well within reach of a local 27B model. In exchange you get privacy, sub-second latency, no per-question cost, and a prompt that works on a flight.
+
+For the harder questions, `shellllm` doesn't force a choice: point `SHELLLM_BASE_URL` at OpenAI, OpenRouter, Groq, or any OpenAI-compatible endpoint, and the same five glyphs route through a hosted model instead. Mix and match — local chat with hosted embeddings, hosted chat with local recall, whatever fits.
 
 ## For contributors and AI agents
 
-Coding conventions, the load-bearing invariants (the **hard wall**, the **comma never executes**, the **terminal-context ladder**), test rules, and where to look: see [AGENTS.md](AGENTS.md).
+Conventions, the load-bearing invariants in detail, test rules, and where to look first: see [AGENTS.md](AGENTS.md).
 
 ## License
 

@@ -10,6 +10,7 @@ Everything beyond the 3-step install. Pick what you need.
 - [The hard wall](#the-hard-wall)
 - [Environment variables](#environment-variables)
 - [Install from source](#install-from-source)
+- [Using shellllm without zsh](#using-shellllm-without-zsh)
 - [Use a hosted API instead of llama-server](#use-a-hosted-api-instead-of-llama-server)
 - [JS rendering for `fetch_url`](#js-rendering-for-fetch_url)
 - [What's deliberately not built](#whats-deliberately-not-built)
@@ -184,6 +185,58 @@ exec zsh
 ```
 
 After a `git pull` you only need `exec zsh` to pick up updates to `zsh/shellllm.zsh`. Python entry-points reload automatically (editable install).
+
+## Using shellllm without zsh
+
+The zsh integration ships the punctuation glyphs (`,` `,,` `?` `??` `???`), which require zsh-specific features like `noglob` and aliasing characters that bash treats as wildcards. The Python CLIs underneath work in any POSIX shell.
+
+### Option 1: bash adapter (recommended for bash users)
+
+A small bash file exposes the same commands under short alphabetic names. Source it from `~/.bashrc`:
+
+```sh
+source "$(brew --prefix)/share/shellllm/shellllm.bash"
+```
+
+Then:
+
+| Alias | Maps to | Example |
+|---|---|---|
+| `llmc` | propose commands (`,`) | `llmc find the five largest files here` |
+| `llmcc` | propose with terminal context | `llmcc verify the file we just produced` |
+| `llmf` | fix the previous command (`,, ` bare) | `llmf` |
+| `llma` | ask (`?`) | `llma what does git stash do` |
+| `llmm` | memory / recall (`???`) | `llmm docker volumes` |
+
+For reliable previous-command capture in bash, install [bash-preexec](https://github.com/rcaloras/bash-preexec) first — without it, `llmcc` and `llmf` only see the exit status, not the command text.
+
+### Option 2: call the CLIs directly
+
+The three Python entry points work in any shell, no adapter required:
+
+```sh
+shellllm-comma "find the five largest files here"
+shellllm-ask "what does git stash do"
+shellllm-recall "docker volumes"
+shellllm-recall --add "the project uses pnpm"
+```
+
+Add your own short aliases or shell functions as you prefer.
+
+### Server control
+
+Without the zsh layer, `??` is unavailable — start `llama-server` directly:
+
+```sh
+llama-server -m ~/.cache/huggingface/hub/.../Qwen3.6-27B-Q4_K_M.gguf \
+  -c 32768 -ngl 99 --host 127.0.0.1 --port 8080 &
+```
+
+Or set `SHELLLM_AUTOSTART=1` and let any CLI invoke a helper. The `shellllm-comma` and `shellllm-ask` binaries respect `SHELLLM_BASE_URL`, so per-call tier routing still works by switching the variable:
+
+```sh
+SHELLLM_BASE_URL=http://127.0.0.1:8091 shellllm-comma "explain this Makefile"
+```
 
 ## Use a hosted API instead of llama-server
 

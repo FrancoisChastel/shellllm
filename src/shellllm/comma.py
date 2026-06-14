@@ -33,25 +33,46 @@ from .embed import embed as embed_text
 from .session import SessionStore, sweep_expired
 from .shell_context import build_shell_context_block
 
+_COMMANDS_PROPERTY = {
+    "type": "array",
+    "minItems": 1,
+    "maxItems": 5,
+    "items": {
+        "type": "object",
+        "properties": {
+            "command": {"type": "string"},
+            "note": {"type": "string"},
+        },
+        "required": ["command", "note"],
+        "additionalProperties": False,
+    },
+}
+
 SCHEMA = {
     "type": "object",
-    "properties": {
-        "commands": {
-            "type": "array",
-            "minItems": 1,
-            "maxItems": 5,
-            "items": {
-                "type": "object",
-                "properties": {
-                    "command": {"type": "string"},
-                    "note": {"type": "string"},
-                },
-                "required": ["command", "note"],
-                "additionalProperties": False,
-            },
-        }
-    },
+    "properties": {"commands": _COMMANDS_PROPERTY},
     "required": ["commands"],
+    "additionalProperties": False,
+}
+
+# Fix mode adds a single-sentence diagnosis that prints to stderr above
+# the picker. It tells the user WHY their command failed (typo, env,
+# logic) so a "git init"-style suggestion doesn't look like the model
+# missing the question — it's the model correctly diagnosing that the
+# environment, not the syntax, is the problem.
+FIX_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "diagnosis": {
+            "type": "string",
+            "description": (
+                "One short sentence on WHY the previous command failed. "
+                "Lead with the category: 'Typo:', 'Environment:', or 'Logic:'."
+            ),
+        },
+        "commands": _COMMANDS_PROPERTY,
+    },
+    "required": ["diagnosis", "commands"],
     "additionalProperties": False,
 }
 
@@ -118,16 +139,32 @@ def _fix_system_prompt() -> str:
     return (
         "You are a shell-command REPAIR assistant. The terminal context shows "
         "a command that just failed (with its exit status and any output). "
-        "Your job: propose 3 to 5 REPLACEMENT commands that, if run, would "
-        "succeed where the original failed. Most failures are typos, missing "
-        "flags, wrong paths, or a forgotten tool — fix those first. The "
-        "FIRST item in your list MUST be your best single-shot guess at what "
-        "the user actually meant. Each entry is a single one-line command + "
-        "a terse note (≤80 chars) explaining the fix. NEVER propose commands "
-        "that merely inspect, list, or explain the failure (no `ls -la`, no "
-        "`echo $?`, no `history`, no `man`, no `pwd`). NEVER include "
-        "`rm -rf`, `sudo`, or other destructive commands. Output must match "
-        "the JSON schema."
+        "Do TWO things, in this order:\n"
+        "\n"
+        "1. DIAGNOSE in one short sentence WHY the command failed. Pick one "
+        "of three categories and lead with it:\n"
+        "   - 'Typo:' the syntax is broken (wrong flag, transposed letters, "
+        "missing arg). Example: 'Typo: `--grpe` should be `--grep`.'\n"
+        "   - 'Environment:' the command is fine but the world isn't (no "
+        "such file, not a git repo, permission denied, missing tool). "
+        "Example: 'Environment: not inside a git repository.'\n"
+        "   - 'Logic:' the command ran but did the wrong thing for the "
+        "user's goal. Example: 'Logic: `-type d` excludes regular files; "
+        "the *.log files are files, not directories.'\n"
+        "\n"
+        "2. Propose 3 to 5 ACTIONABLE next commands. The FIRST item is your "
+        "best single-shot guess at what the user actually wants to do now. "
+        "Match the category:\n"
+        "   - Typo → the corrected command.\n"
+        "   - Environment → the setup that unblocks it (`git init`, "
+        "`mkdir -p ...`, `cd ../other-dir`, `chmod +r ...`), then the "
+        "original-as-intended command for after that.\n"
+        "   - Logic → a different command that achieves the actual goal.\n"
+        "\n"
+        "Each entry is one shell line + a terse note (≤80 chars). NEVER "
+        "include `rm -rf`, `sudo`, or other destructive commands. NEVER "
+        "propose commands that only inspect the failure (`echo $?`, "
+        "`history`, `man`, `pwd`). Output must match the JSON schema."
     )
 
 
@@ -288,14 +325,20 @@ def _build_messages(
     return system_msgs + history + [user_msg], history + [user_msg]
 
 
-def _ask_model(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, str]]] | None:
+def _ask_model(
+    messages: list[dict[str, Any]],
+    *,
+    fix_mode: bool = False,
+) -> tuple[str, list[dict[str, str]]] | None:
+    schema = FIX_SCHEMA if fix_mode else SCHEMA
+    name = "fix" if fix_mode else "commands"
     try:
         with _err.status("[cyan]thinking…[/cyan]", spinner="dots"):
             reply = chat(
                 messages,
                 response_format={
                     "type": "json_schema",
-                    "json_schema": {"name": "commands", "schema": SCHEMA, "strict": True},
+                    "json_schema": {"name": name, "schema": schema, "strict": True},
                 },
                 max_tokens=512,
             )
@@ -313,6 +356,16 @@ def _ask_model(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, str]
     if not items:
         _err.print(f"{_RED}, error:{_RESET} no suggestions returned")
         return None
+
+    # In fix mode the model also produced a one-line diagnosis. Surface
+    # it on stderr so the user reads "why it failed" before the picker
+    # opens — turns a confusing "model proposed git init" into "Ah, not
+    # in a git repo, here's how to unblock."
+    diagnosis = (parsed.get("diagnosis") or "").strip() if fix_mode else ""
+    if diagnosis:
+        sys.stderr.write(f"{_DIM}{_CYAN}↻ {diagnosis}{_RESET}\n")
+        sys.stderr.flush()
+
     return content, items
 
 
@@ -401,7 +454,7 @@ def main() -> int:
         fix_mode=fix_mode,
     )
 
-    result = _ask_model(messages)
+    result = _ask_model(messages, fix_mode=fix_mode)
     if result is None:
         return 1
     content, items = result

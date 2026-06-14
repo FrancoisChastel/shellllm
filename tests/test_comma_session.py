@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sys
+from typing import Any
 
 import pytest
 
@@ -27,21 +28,25 @@ def isolated(tmp_path, monkeypatch):
 
 @pytest.fixture
 def fake_model(monkeypatch):
-    """Patch chat() to return a fixed JSON payload. Captures messages sent."""
+    """Patch chat() to return a fixed JSON payload. Captures messages sent.
+
+    Adapts to the requested schema: fix mode (``json_schema.name == "fix"``)
+    gets an extra ``diagnosis`` field, normal mode gets just ``commands``.
+    """
     sent: list[list[dict]] = []
 
     def fake_chat(messages, **kwargs):
         sent.append(list(messages))
-        return {
-            "content": json.dumps(
-                {
-                    "commands": [
-                        {"command": "ls -lh", "note": "list with sizes"},
-                        {"command": "ls -la", "note": "include dotfiles"},
-                    ]
-                }
-            )
+        name = ((kwargs.get("response_format") or {}).get("json_schema") or {}).get("name", "")
+        payload: dict[str, Any] = {
+            "commands": [
+                {"command": "ls -lh", "note": "list with sizes"},
+                {"command": "ls -la", "note": "include dotfiles"},
+            ]
         }
+        if name == "fix":
+            payload["diagnosis"] = "Typo: the test fake diagnosed the failure."
+        return {"content": json.dumps(payload)}
 
     monkeypatch.setattr(comma, "chat", fake_chat)
     return sent
@@ -240,8 +245,10 @@ def test_fix_builds_repair_prompt(monkeypatch, capsys, isolated, fake_model, aut
     assert "fix" in user_msg.lower()
     system_text = "\n".join(m["content"] for m in sent if m["role"] == "system")
     # Fix mode swaps the system prompt to the repair-specific one,
-    # pinning the model to REPLACEMENT commands (no inspection).
-    assert "REPLACEMENT" in system_text
+    # teaching the model to diagnose and categorise the failure.
+    assert "DIAGNOSE" in system_text
+    assert "Typo:" in system_text
+    assert "Environment:" in system_text
     # Terminal context still rides along.
     assert "git push origin main" in system_text
 
@@ -251,6 +258,44 @@ def test_fix_appends_user_hint(monkeypatch, capsys, isolated, fake_model, auto_p
     assert _run(["--fix", "I", "meant", "the", "dev", "branch"], monkeypatch) == 0
     user_msg = next(m["content"] for m in fake_model[0] if m["role"] == "user")
     assert "I meant the dev branch" in user_msg
+
+
+def test_fix_uses_fix_schema(monkeypatch, capsys, isolated, fake_model, auto_pick):
+    """Fix mode must request the diagnose-then-suggest schema, not the plain one."""
+    _enable_shell_ctx(monkeypatch)
+    sent_kwargs: list = []
+
+    def fake_chat_capture(messages, **kwargs):
+        sent_kwargs.append(kwargs)
+        return {
+            "content": json.dumps(
+                {
+                    "diagnosis": "Typo: --grpe should be --grep.",
+                    "commands": [{"command": "git log --grep fix", "note": "fix"}],
+                }
+            )
+        }
+
+    monkeypatch.setattr(comma, "chat", fake_chat_capture)
+    assert _run(["--fix"], monkeypatch) == 0
+    schema_name = sent_kwargs[0]["response_format"]["json_schema"]["name"]
+    assert schema_name == "fix"
+
+
+def test_fix_surfaces_diagnosis_on_stderr(monkeypatch, capsys, isolated, fake_model, auto_pick):
+    """The 1-sentence diagnosis must reach the user before the picker."""
+    _enable_shell_ctx(monkeypatch)
+    assert _run(["--fix"], monkeypatch) == 0
+    err = capsys.readouterr().err
+    # The fake_model fixture stamps a deterministic diagnosis when fix mode is used.
+    assert "Typo: the test fake diagnosed the failure." in err
+
+
+def test_plain_comma_does_not_print_diagnosis(monkeypatch, capsys, isolated, fake_model, auto_pick):
+    """Diagnosis is fix-mode only; non-fix turns must stay quiet."""
+    _run(["list", "files"], monkeypatch)
+    err = capsys.readouterr().err
+    assert "diagnosed the failure" not in err
 
 
 def test_fix_starts_fresh_session(monkeypatch, capsys, isolated, fake_model, auto_pick):
