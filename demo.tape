@@ -1,14 +1,14 @@
 # shellllm — flow demo
 #
-# A ~70-second story: you're working in a directory of build artifacts.
-# You ask for a command instead of googling (`,`), you typo something
-# and fix it with two keystrokes (`,,`), you ask a question without
-# breaking flow (`?`), you pipe a real error in, you pin a fact, and
-# you recall something you asked days ago (`???`) — all at the prompt.
+# A ~75-second story: you ask for a command instead of googling (`,`),
+# you mistype a flag and fix it with two keystrokes (`,,`), you ask a
+# question without breaking flow (`?`), you pipe a real error into a
+# bigger model for the diagnosis, you pin a fact, and you recall
+# something you asked days ago (`???`) — all at the prompt.
 #
 # Render
 #   brew install vhs                           # one-time, ~30s
-#   ?? --start balanced                        # llama-server must be running
+#   ?? --start fast && ?? --start balanced     # both tiers up
 #   vhs demo.tape                              # writes demo.gif
 #
 # The Hide block sets up a sandbox in /tmp/shellllm-demo with sized
@@ -23,7 +23,9 @@ Require zsh
 Require llama-server
 Set Shell "zsh"
 Set FontSize 18
-Set FontFamily "JetBrainsMono Nerd Font"
+# SF Mono matches macOS Terminal.app/iTerm defaults. Fallback chain stays
+# valid on Linux dev boxes too.
+Set FontFamily "SF Mono"
 Set Theme "Catppuccin Mocha"
 Set Width 1200
 Set Height 720
@@ -72,76 +74,81 @@ Enter
 Type@10ms "PY"
 Enter
 Sleep 400ms
-# Warm the model with one direct chat call so the first VISIBLE beat
-# doesn't pay cold-start latency (15-20s on this 27B Q4). Heredoc to
-# avoid VHS's parser choking on JSON braces / escaped quotes.
+# Warm BOTH tiers so the first visible beats don't pay cold-start
+# latency. SHELLLM_BASE_URL targets a specific tier; Python's stdlib
+# urllib avoids VHS's parser choking on JSON braces.
 Type@10ms "python3 - <<'PY'"
 Enter
-Type@10ms "from shellllm.client import chat"
+Type@10ms "import os, json, urllib.request"
 Enter
-Type@10ms "chat([{'role':'user','content':'hi'}], max_tokens=4)"
+Type@10ms "for port in (8091, 8080):"
+Enter
+Type@10ms "    req = urllib.request.Request(f'http://127.0.0.1:{port}/v1/chat/completions', data=json.dumps({'model':'local','messages':[{'role':'user','content':'hi'}],'max_tokens':4}).encode(), headers={'Content-Type':'application/json'})"
+Enter
+Type@10ms "    try: urllib.request.urlopen(req, timeout=20).read()"
+Enter
+Type@10ms "    except Exception: pass"
 Enter
 Type@10ms "PY"
 Enter
-Sleep 12s
+Sleep 18s
 Type "clear"
 Enter
 Sleep 200ms
 Show
 
-# ── Beat 1 — `,` proposes a command ─────────────────────────────────────
+# ── Beat 1 — `, --fast` proposes a command via the fast tier ────────────
 # You're in a directory full of build artifacts. You vaguely remember
-# `du` exists. Instead of googling, you ask the model in-band.
-Type ", find the five largest files in this directory"
+# `du` exists. Ask the model — routed to the fast tier (MoE 3B-active,
+# ~3× faster than balanced).
+Type ", --fast find the five largest files in this directory"
 Sleep 600ms
 Enter
-# Wait until fzf paints its prompt — robust against model latency.
 Wait+Screen@30s /enter: drop on prompt/
 Sleep 600ms
-# Accept the highlighted proposal — `print -z` drops it on the prompt.
 Enter
 Sleep 1s
-# Run it.
 Enter
 Sleep 3s
 
-# ── Beat 2 — `,,` fixes the previous command ────────────────────────────
-# A classic transposition. The shell prints "command not found" with
-# exit status 127. Doubling the glyph brings the terminal context: bare
-# `,,` sees the failed command + status and proposes the fix.
-Type "gti status"
+# ── Beat 2 — `,,` fixes the previous command (still on fast) ────────────
+# A real flag typo, the kind people make daily. `--grpe` instead of
+# `--grep`. The shell prints "unknown option" with exit status 129.
+# Bare `,,` brings the terminal context (command + status) and lets the
+# fast tier propose the fix.
+Type "git log --oneline -n 10 --grpe 'fix'"
 Sleep 500ms
 Enter
 Sleep 1500ms
-Type ",,"
+Type ",, --fast"
 Sleep 800ms
 Enter
 Wait+Screen@30s /enter: drop on prompt/
 Sleep 600ms
-# Accept the fixed command, run it.
 Enter
 Sleep 1s
 Enter
-Sleep 3s
+Sleep 4s
 Type "clear"
 Enter
 Sleep 400ms
 
-# ── Beat 3 — `?` answers without breaking the flow ──────────────────────
-# `git stash` came to mind and you blanked. Ask in-band, get an answer.
-Type "? in markdown and 3 lines max, what does git stash do"
+# ── Beat 3 — `? --fast` for a quick question ────────────────────────────
+# `git stash` came to mind and you blanked. The fast tier handles this
+# in seconds.
+Type "? --fast in markdown and 3 lines max, what does git stash do"
 Sleep 600ms
 Enter
-# Streaming markdown render — generous sleep because turn length varies
-# with the local model.
 Sleep 14s
 
-# ── Beat 4 — pipe a real error into `?` ─────────────────────────────────
-# The build fails. Pipe the traceback in; piped stdin becomes context.
-Type "python3 build.py 2>&1 | ? one line: what is broken here"
+# ── Beat 4 — switch to the balanced tier for the harder question ────────
+# The build fails. The piped traceback IS the context. For a real
+# diagnosis we want the dense 27B — `--balanced` routes this one call
+# to the bigger model. Same flow, different muscle.
+Type "python3 build.py 2>&1 | ? --balanced one line: what is broken here"
 Sleep 600ms
 Enter
-Sleep 14s
+Sleep 16s
 Type "clear"
 Enter
 Sleep 400ms
@@ -168,5 +175,4 @@ Enter
 Sleep 5s
 
 # ── Outro ───────────────────────────────────────────────────────────────
-# Let the final frame breathe so a viewer can read the last row.
 Sleep 3s

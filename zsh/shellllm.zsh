@@ -205,10 +205,16 @@ function ,() {
 # default `cmd`) controls how much context rides along.
 function ,,() {
   local __last_status=$_SHELLLM_PREV_STATUS
+  # A leading tier flag (`,, --fast …`) is routing, not the prompt —
+  # pop it so the fix-vs-ctx switch only sees real arguments.
+  local -a tier
+  if [[ "${1:-}" == --fast || "${1:-}" == --balanced || "${1:-}" == --smart ]]; then
+    tier=("$1"); shift
+  fi
   if (( $# )); then
-    _shellllm_comma_run $__last_status --ctx "$@"
+    _shellllm_comma_run $__last_status ${tier[@]} --ctx "$@"
   else
-    _shellllm_comma_run $__last_status --fix
+    _shellllm_comma_run $__last_status ${tier[@]} --fix
   fi
 }
 

@@ -2,6 +2,17 @@
 
 Conventions for AI coding assistants (Claude Code, Cursor, Aider, etc.) working in this repo. Humans contributing should read this too — it captures the project's philosophy in a few hundred words.
 
+## Quickstart for contributors
+
+```sh
+git clone https://github.com/FrancoisChastel/shellllm && cd shellllm
+python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+.venv/bin/pytest -q                                  # 257 tests, < 1s
+.venv/bin/ruff check . && .venv/bin/ruff format --check .
+```
+
+End-user docs: [README.md](README.md). Deep config: [CONFIGURATION.md](CONFIGURATION.md). Homebrew packaging + release flow: [docs/HOMEBREW.md](docs/HOMEBREW.md).
+
 ## What this project is
 
 `shellllm` exposes four glyph commands to zsh, backed by a local `llama-server`:
