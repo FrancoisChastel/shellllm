@@ -26,11 +26,21 @@ Three preset tiers, named for what you'd reach for:
 | `smart` | `unsloth/Qwen3-Coder-Next-GGUF` | Latest coder-tuned model. Best for shell/agent work. |
 
 ```sh
-huggingface-cli download unsloth/Qwen3-Coder-Next-GGUF
+scripts/download-models.sh smart    # or: huggingface-cli download unsloth/Qwen3-Coder-Next-GGUF
 ?? --start smart
 ```
 
 `??` finds the GGUF inside your HuggingFace cache — no path config required.
+
+The `download-models.sh` helper handles the three chat tiers and the embedding tiers in one command:
+
+```sh
+scripts/download-models.sh                  # default: balanced (~16 GB)
+scripts/download-models.sh fast             # one specific tier
+scripts/download-models.sh fast balanced smart    # multiple
+scripts/download-models.sh all --with-embed       # everything + default embed
+scripts/download-models.sh --list           # what's downloaded vs. what isn't
+```
 
 Each tier binds to its own port (`fast` :8091, `balanced` :8080, `smart` :8093), so tiers can serve **side by side** — and a single call can be routed to whichever fits:
 

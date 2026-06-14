@@ -76,6 +76,8 @@ class Shellllm < Formula
     # Ship the zsh integration file at a stable, well-known location.
     pkgshare.install "zsh/shellllm.zsh"
     pkgshare.install "bash/shellllm.bash"
+    pkgshare.install "scripts/download-models.sh"
+    chmod 0755, pkgshare/"download-models.sh"
   end
 
   def caveats
@@ -86,7 +88,8 @@ class Shellllm < Formula
 
       Then reload your shell, grab a model, and start the backend:
 
-        huggingface-cli download unsloth/Qwen3.6-27B-GGUF   # one-time
+        #{opt_pkgshare}/download-models.sh                  # one-time
+        # or:  #{opt_pkgshare}/download-models.sh all --with-embed
         ??              # default tier (balanced)
         ?? --list       # show tiers and what's downloaded
         ?? --start fast # MoE + MTP — fastest on Apple Silicon
@@ -123,5 +126,6 @@ class Shellllm < Formula
     # Confirm the zsh integration shipped where caveats say it does.
     assert_predicate pkgshare/"shellllm.zsh", :exist?
     assert_predicate pkgshare/"shellllm.bash", :exist?
+    assert_predicate pkgshare/"download-models.sh", :executable?
   end
 end

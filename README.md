@@ -23,8 +23,9 @@ echo 'source "$(brew --prefix)/share/shellllm/shellllm.zsh"' >> ~/.zshrc
 exec zsh
 
 # 2. Model (one-time download, ~16 GB)
-huggingface-cli download unsloth/Qwen3.6-27B-GGUF
-#  (need huggingface-cli? `pipx install huggingface_hub`)
+"$(brew --prefix)/share/shellllm/download-models.sh"
+#  ↑ fetches the default tier. Pass `fast`, `smart`, or `all` for more.
+#  ↑ needs huggingface-cli — `pipx install huggingface_hub` if missing.
 
 # 3. Run
 ??                          # start the local server (~10s once cached)

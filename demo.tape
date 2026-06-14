@@ -13,8 +13,9 @@
 #
 # The Hide block sets up a sandbox in /tmp/shellllm-demo with sized
 # files (so `du` has output), a deliberately broken build.py (for the
-# piping beat), and seeds the archive with one prior conversation about
-# git stash (so the `???` recall finds a real, pre-existing hit).
+# piping beat), and seeds the archive with one prior conversation
+# about Docker volumes (so the `???` recall finds a real, pre-existing
+# hit later — the kind of "what did past me ask?" that recall is for).
 
 Output demo.gif
 
@@ -63,25 +64,26 @@ Enter
 # A build script that fails with a real traceback, for the piping beat.
 Type "echo 'import tomlib' > build.py"
 Enter
-# Seed one prior shellllm session into the archive so `??? git` finds
-# something later in the demo. Heredoc keeps the quoting manageable.
+# Seed one prior shellllm session into the archive so `??? docker`
+# finds something later in the demo — a realistic "what did I ask the
+# other day?" hit. Heredoc keeps the quoting manageable.
 Type@10ms "python3 - <<'PY'"
 Enter
 Type@10ms "from shellllm.archive import Archive"
 Enter
-Type@10ms "Archive().ingest_session(cmd='ask', terminal_id='demo', created_at=0, last_used=0, last_pwd='~/code/api', last_date='2026-06-08', turn_count=1, messages=[{'role':'user','content':'how does git stash work'},{'role':'assistant','content':'git stash temporarily shelves uncommitted changes so you can switch contexts, then `git stash pop` re-applies them on top of the current working tree.'}])"
+Type@10ms "Archive().ingest_session(cmd='ask', terminal_id='demo', created_at=0, last_used=0, last_pwd='~/code/api', last_date='2026-06-08', turn_count=1, messages=[{'role':'user','content':'how do docker volumes work'},{'role':'assistant','content':'A Docker volume is a managed filesystem owned by the Docker daemon that you mount into a container; it survives container restarts and is the recommended way to persist data (vs. bind mounts, which point at a host path).'}])"
 Enter
 Type@10ms "PY"
 Enter
 Sleep 400ms
-# Warm BOTH tiers so the first visible beats don't pay cold-start
+# Warm all three tiers so the visible beats don't pay cold-start
 # latency. SHELLLM_BASE_URL targets a specific tier; Python's stdlib
 # urllib avoids VHS's parser choking on JSON braces.
 Type@10ms "python3 - <<'PY'"
 Enter
 Type@10ms "import os, json, urllib.request"
 Enter
-Type@10ms "for port in (8091, 8080):"
+Type@10ms "for port in (8091, 8080, 8093):"
 Enter
 Type@10ms "    req = urllib.request.Request(f'http://127.0.0.1:{port}/v1/chat/completions', data=json.dumps({'model':'local','messages':[{'role':'user','content':'hi'}],'max_tokens':4}).encode(), headers={'Content-Type':'application/json'})"
 Enter
@@ -100,11 +102,12 @@ Show
 # ── Beat 0 — spin up the local model ────────────────────────────────────
 # The audience needs to know the LLM lives on your machine. `?? --start
 # fast` puts a llama-server on :8091 with the MoE 3B-active tier — the
-# rest of the demo uses it by default (SHELLLM_BASE_URL points there).
-Type "?? --start fast"
+# default route in this demo. Two other tiers (`balanced`, `smart`)
+# also up and addressable per-call.
+Type "?? --status"
 Sleep 600ms
 Enter
-Sleep 2s
+Sleep 3s
 
 # ── Beat 1 — `,` proposes a command ─────────────────────────────────────
 # You're in a directory of build artifacts. You vaguely remember `du`
@@ -141,19 +144,20 @@ Type "clear"
 Enter
 Sleep 400ms
 
-# ── Beat 3 — `?` answers a quick question ───────────────────────────────
-# `git stash` came to mind and you blanked. The fast tier handles this
-# in seconds.
-Type "? in markdown and 3 lines max, what does git stash do"
+# ── Beat 3 — quick contextual question, default tier (fast) ─────────────
+# A flag you just saw in Beat 1 (`du -k`). The fast tier answers in
+# seconds, no flag needed because SHELLLM_BASE_URL is already pointing
+# at fast.
+Type "? in 2 lines, what does the -k flag mean in du"
 Sleep 600ms
 Enter
 Sleep 14s
 
-# ── Beat 4 — switch to the balanced tier for the harder question ────────
-# The build fails. The piped traceback IS the context. For a real
-# diagnosis we want the dense 27B — `--balanced` routes this one call
-# to the bigger model. Same flow, different muscle.
-Type "python3 build.py 2>&1 | ? --balanced one line: what is broken here"
+# ── Beat 4 — switch to the smart tier for the harder question ───────────
+# The build fails. The piped traceback IS the context. The smart tier
+# (Qwen3-Coder-Next) is tuned for code — `--smart` routes this one
+# call to it. Same flow, different model, picked per-call.
+Type "python3 build.py 2>&1 | ? --smart one line: what is broken here"
 Sleep 600ms
 Enter
 Sleep 16s
@@ -169,9 +173,9 @@ Enter
 Sleep 2s
 
 # ── Beat 6 — `???` recalls across past sessions ─────────────────────────
-# "What was that git thing I asked the other day?" Bare query → search
-# across every archived conversation in this pane and others.
-Type "??? git stash"
+# "What did past me ask about Docker?" Bare query → search across
+# every archived conversation in this pane and others.
+Type "??? docker volume"
 Sleep 500ms
 Enter
 Sleep 5s
