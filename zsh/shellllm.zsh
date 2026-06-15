@@ -266,6 +266,24 @@ function _shellllm_server_up() {
   curl -fsS -m 1 "http://127.0.0.1:${port}/health" >/dev/null 2>&1
 }
 
+# Returns the GGUF filename of whatever model is currently loaded on
+# the given port (via llama-server's OpenAI-shape /v1/models endpoint),
+# stripped of the trailing `.gguf`. Falls back to "" on any error so
+# the caller can decide how to render the gap.
+function _shellllm_running_model() {
+  local port="${1:-$SHELLLM_PORT}"
+  local body
+  body=$(curl -fsS -m 2 "http://127.0.0.1:${port}/v1/models" 2>/dev/null) || return 0
+  # Prefer .data[0].id (OpenAI shape); fall back to .models[0].name
+  # (llama-server's older field). Plain sed beats jq for portability.
+  local raw
+  raw=$(printf '%s' "$body" | sed -n 's/.*"data"[^[]*\[[^{]*{[^"]*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+  if [[ -z $raw ]]; then
+    raw=$(printf '%s' "$body" | sed -n 's/.*"models"[^[]*\[[^{]*{[^"]*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+  fi
+  printf '%s' "${raw%.gguf}"
+}
+
 function _shellllm_embed_up() {
   curl -fsS -m 1 "http://127.0.0.1:${SHELLLM_EMBED_PORT}/health" >/dev/null 2>&1
 }
@@ -414,17 +432,19 @@ function _shellllm_start() {
           || echo "(nothing to stop on :${stop_port})"
         return 0 ;;
       --status)
-        local t p any=0
+        local t p name any=0
         for t in "${_SHELLLM_TIER_ORDER[@]}"; do
           p="${_SHELLLM_TIER_PORT[$t]}"
           if _shellllm_server_up "$p"; then
-            echo "up   ${t} → http://127.0.0.1:${p}"
+            name=$(_shellllm_running_model "$p")
+            echo "up   ${t} → ${name:-?}  ·  http://127.0.0.1:${p}"
             any=1
           fi
         done
         if (( ! any )); then
           if _shellllm_server_up; then
-            echo "up   → http://127.0.0.1:${SHELLLM_PORT}"
+            name=$(_shellllm_running_model "$SHELLLM_PORT")
+            echo "up   → ${name:-?}  ·  http://127.0.0.1:${SHELLLM_PORT}"
           else
             echo "down → run ?? to start"
           fi
