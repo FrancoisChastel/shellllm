@@ -55,14 +55,25 @@ def _safe_embed(text: str) -> list[float] | None:
 
 
 # Mutually-exclusive "do this instead of recall" flags.
-_MODE_FLAGS = ("--add", "--list", "--drop", "--status", "--archives", "--show")
+_MODE_FLAGS = (
+    "--add",
+    "--list",
+    "--drop",
+    "--status",
+    "--archives",
+    "--show",
+    "--prune",
+    "--vacuum",
+)
 
 # Mode flags that can't be narrowed by ``--ask`` / ``--comma``.
 # - facts ops (``--add``/``--list``/``--drop``) are global
 # - ``--status`` counts are global
 # - ``--show <id>`` already targets exactly one row
 # Only ``--archives`` and bare recall accept filters.
-_GLOBAL_MODES = frozenset({"--add", "--list", "--drop", "--status", "--show"})
+_GLOBAL_MODES = frozenset(
+    {"--add", "--list", "--drop", "--status", "--show", "--prune", "--vacuum"}
+)
 
 # Restrict recall to a single asking surface. Extend when a new asking
 # command is added.
@@ -87,6 +98,9 @@ def _print_usage(label: str = "???") -> None:
         f"       {label} --archives [n]           list n recent archived sessions\n"
         f"                                        (default 20; --ask / --comma filter)\n"
         f"       {label} --show <id>              print full transcript of one archive\n"
+        f"       {label} --prune --older-than <N>d   drop archived sessions older than N days\n"
+        f"       {label} --prune --keep <N>          keep only the N most recent archived sessions\n"
+        f"       {label} --vacuum                 reclaim disk space after a prune\n"
         f"       {label} --help                   show this message\n"
     )
 
@@ -190,7 +204,106 @@ def _cmd_status(memory: MemoryStore, archive: Archive, rest: list[str]) -> int:
         sys.stderr.write(f"{_RED}??? error:{_RESET} `--status` takes no arguments\n")
         return 2
     facts = memory.load()
-    print(f"{len(facts)} remembered facts · {archive.count()} archived sessions")
+    size_bytes = archive.db_size_bytes()
+    size_mb = size_bytes / (1024 * 1024)
+    print(
+        f"{len(facts)} remembered facts · "
+        f"{archive.count()} archived sessions · "
+        f"{size_mb:.1f} MB on disk"
+    )
+    return 0
+
+
+def _parse_age_spec(spec: str) -> float | None:
+    """Parse `30d`, `12h`, `4w`, `90m` into seconds. Returns None on garbage."""
+    if not spec or len(spec) < 2:
+        return None
+    suffix = spec[-1].lower()
+    try:
+        n = float(spec[:-1])
+    except ValueError:
+        return None
+    units = {"s": 1, "m": 60, "h": 3600, "d": 86_400, "w": 7 * 86_400}
+    if suffix not in units:
+        return None
+    return n * units[suffix]
+
+
+def _cmd_prune(archive: Archive, rest: list[str]) -> int:
+    """Implements `??? --prune --older-than 30d` and `--prune --keep 500`."""
+    import time
+
+    older_seconds: float | None = None
+    keep_n: int | None = None
+    i = 0
+    while i < len(rest):
+        arg = rest[i]
+        if arg == "--older-than" and i + 1 < len(rest):
+            older_seconds = _parse_age_spec(rest[i + 1])
+            if older_seconds is None:
+                sys.stderr.write(
+                    f"{_RED}??? error:{_RESET} `--older-than` expects forms like 30d, 12h, 4w\n"
+                )
+                return 2
+            i += 2
+        elif arg == "--keep" and i + 1 < len(rest):
+            try:
+                keep_n = int(rest[i + 1])
+                if keep_n < 0:
+                    raise ValueError
+            except ValueError:
+                sys.stderr.write(
+                    f"{_RED}??? error:{_RESET} `--keep` expects a non-negative integer\n"
+                )
+                return 2
+            i += 2
+        else:
+            sys.stderr.write(
+                f"{_RED}??? error:{_RESET} unexpected arg `{arg}` "
+                f"(use `--older-than 30d` and/or `--keep 500`)\n"
+            )
+            return 2
+
+    if older_seconds is None and keep_n is None:
+        sys.stderr.write(
+            f"{_RED}??? error:{_RESET} `--prune` needs `--older-than <Nd|Nh|Nw>` "
+            f"and/or `--keep <N>`\n"
+        )
+        return 2
+
+    deleted_age = 0
+    deleted_keep = 0
+    if older_seconds is not None:
+        deleted_age = archive.prune_older_than(cutoff=time.time() - older_seconds)
+    if keep_n is not None:
+        deleted_keep = archive.prune_to_keep_newest(keep=keep_n)
+    total = deleted_age + deleted_keep
+    if total == 0:
+        print("nothing to prune.")
+    else:
+        bits = []
+        if deleted_age:
+            bits.append(f"{deleted_age} older than cutoff")
+        if deleted_keep:
+            bits.append(f"{deleted_keep} over keep-cap")
+        print(f"pruned {total} session(s): {', '.join(bits)}.")
+        print("run `??? --vacuum` to reclaim disk space.")
+    return 0
+
+
+def _cmd_vacuum(archive: Archive, rest: list[str]) -> int:
+    if rest:
+        sys.stderr.write(f"{_RED}??? error:{_RESET} `--vacuum` takes no arguments\n")
+        return 2
+    before = archive.db_size_bytes()
+    archive.vacuum()
+    after = archive.db_size_bytes()
+    saved = max(0, before - after)
+    print(
+        f"vacuum done · {before / 1024 / 1024:.1f} MB → "
+        f"{after / 1024 / 1024:.1f} MB "
+        f"(reclaimed {saved / 1024 / 1024:.1f} MB)"
+    )
     return 0
 
 
@@ -315,6 +428,10 @@ def main() -> int:
         return _cmd_archives(archive, argv, cmd_filter)
     if mode == "--show":
         return _cmd_show(archive, argv)
+    if mode == "--prune":
+        return _cmd_prune(archive, argv)
+    if mode == "--vacuum":
+        return _cmd_vacuum(archive, argv)
 
     # No mode flag → recall path. Filter is optional.
     if not argv:

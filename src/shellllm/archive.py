@@ -197,6 +197,55 @@ class Archive:
             row = conn.execute("SELECT COUNT(*) FROM archives").fetchone()
             return int(row[0]) if row else 0
 
+    # ── Lifecycle ------------------------------------------------------
+
+    def db_size_bytes(self) -> int:
+        """On-disk size of the archive file, or 0 if it doesn't exist yet."""
+        try:
+            return self.path.stat().st_size
+        except FileNotFoundError:
+            return 0
+
+    def prune_older_than(self, *, cutoff: float) -> int:
+        """Delete archives with ``archived_at < cutoff``. Returns count deleted.
+
+        ``cutoff`` is a unix timestamp. Use ``time.time() - 86_400 * N``
+        for "older than N days". The FTS5 trigger on ``archives`` keeps
+        the search index consistent; no extra cleanup needed.
+        """
+        with self._conn() as conn:
+            cur = conn.execute("DELETE FROM archives WHERE archived_at < ?", (cutoff,))
+            return int(cur.rowcount or 0)
+
+    def prune_to_keep_newest(self, *, keep: int) -> int:
+        """Delete all but the ``keep`` most recent archives. Returns count deleted.
+
+        Useful for a hard size cap when users set
+        ``SHELLLM_ARCHIVE_MAX_ROWS``. Ordering is by ``archived_at``
+        descending; ties are broken by id (also descending) for stable
+        behaviour during a tied-timestamp burst.
+        """
+        if keep < 0:
+            keep = 0
+        with self._conn() as conn:
+            cur = conn.execute(
+                """
+                DELETE FROM archives
+                WHERE id NOT IN (
+                    SELECT id FROM archives
+                    ORDER BY archived_at DESC, id DESC
+                    LIMIT ?
+                )
+                """,
+                (keep,),
+            )
+            return int(cur.rowcount or 0)
+
+    def vacuum(self) -> None:
+        """Reclaim space after a prune. Safe to call any time; no-op on empty DB."""
+        with self._conn() as conn:
+            conn.execute("VACUUM")
+
     # ── Browse ---------------------------------------------------------
 
     def recent(

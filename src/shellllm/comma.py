@@ -21,6 +21,7 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -28,8 +29,9 @@ from typing import Any
 from rich.console import Console
 
 from .archive import Archive
-from .client import LlamaServerError, chat
+from .client import LlamaServerError, chat, chat_stream
 from .embed import embed as embed_text
+from .project_context import read_rc_block
 from .session import SessionStore, sweep_expired
 from .shell_context import build_shell_context_block
 
@@ -135,22 +137,57 @@ def _system_prompt() -> str:
 
 
 def _fix_system_prompt() -> str:
-    """Used by `,,` / `, --fix`. Replaces the regular system prompt."""
+    """Used by `,,` / `, --fix`. Replaces the regular system prompt.
+
+    Carries few-shot examples for each category so smaller models
+    (Qwen3.6-35B-A3B in fast mode) get the categorisation right at
+    least as often as the dense 27B. The 'Uncertain:' escape hatch
+    lets the model admit ambiguity instead of forcing a wrong
+    classification — the CLI sees that and falls through to the
+    picker so the user picks the best option themselves.
+    """
     return (
         "You are a shell-command REPAIR assistant. The terminal context shows "
         "a command that just failed (with its exit status and any output). "
         "Do TWO things, in this order:\n"
         "\n"
         "1. DIAGNOSE in one short sentence WHY the command failed. Pick one "
-        "of three categories and lead with it:\n"
+        "of four categories and lead with it:\n"
         "   - 'Typo:' the syntax is broken (wrong flag, transposed letters, "
-        "missing arg). Example: 'Typo: `--grpe` should be `--grep`.'\n"
-        "   - 'Environment:' the command is fine but the world isn't (no "
-        "such file, not a git repo, permission denied, missing tool). "
-        "Example: 'Environment: not inside a git repository.'\n"
-        "   - 'Logic:' the command ran but did the wrong thing for the "
-        "user's goal. Example: 'Logic: `-type d` excludes regular files; "
-        "the *.log files are files, not directories.'\n"
+        "missing arg). The shell never invoked the user's intent.\n"
+        "   - 'Environment:' the syntax is fine but the world isn't (no "
+        "such file, not a git repo, permission denied, missing tool, wrong "
+        "directory).\n"
+        "   - 'Logic:' the command ran successfully but did the wrong thing "
+        "for the user's apparent goal (e.g. excluded the right files, used "
+        "the wrong unit, matched too broadly).\n"
+        "   - 'Uncertain:' you genuinely can't tell which of the above "
+        "applies, or multiple plausible fixes diverge sharply. Prefer this "
+        "over a confidently wrong category.\n"
+        "\n"
+        "Worked examples — match this shape precisely:\n"
+        "\n"
+        "  previous command: `git log --grpe 'fix'`     status: 129\n"
+        "  → Typo: `--grpe` should be `--grep`.\n"
+        "  → first command: `git log --grep 'fix'`\n"
+        "\n"
+        "  previous command: `git log -n 5`             status: 128\n"
+        "  output: fatal: not a git repository (or any of the parent directories): .git\n"
+        "  → Environment: not inside a git repository.\n"
+        "  → first command: `git init` (then re-run `git log`).\n"
+        "\n"
+        "  previous command: `cat nonexistent.conf`     status: 1\n"
+        "  → Environment: `nonexistent.conf` does not exist in this directory.\n"
+        "  → first command: `ls *.conf` (find the real filename first).\n"
+        "\n"
+        "  previous command: `find . -name '*.log' -type d`   status: 0\n"
+        "  → Logic: `-type d` matches directories, but `*.log` paths are files; the search returns nothing useful.\n"
+        "  → first command: `find . -name '*.log' -type f`\n"
+        "\n"
+        "  previous command: `kubectl get pods -n prod`      status: 1\n"
+        "  output: error: You must be logged in to the server (Unauthorized)\n"
+        "  → Uncertain: the auth context may be expired, the kubeconfig may point at the wrong cluster, or your token may need refresh — multiple distinct fixes apply.\n"
+        "  → first command: `kubectl config current-context` (figure out which cluster first).\n"
         "\n"
         "2. Propose 3 to 5 ACTIONABLE next commands. The FIRST item is your "
         "best single-shot guess at what the user actually wants to do now. "
@@ -160,6 +197,9 @@ def _fix_system_prompt() -> str:
         "`mkdir -p ...`, `cd ../other-dir`, `chmod +r ...`), then the "
         "original-as-intended command for after that.\n"
         "   - Logic → a different command that achieves the actual goal.\n"
+        "   - Uncertain → start with a SAFE inspection that narrows the "
+        "diagnosis (e.g. `kubectl config current-context`, `ls`, "
+        "`echo $PATH`), then offer the most likely fixes as alternatives.\n"
         "\n"
         "Each entry is one shell line + a terse note (≤80 chars). NEVER "
         "include `rm -rf`, `sudo`, or other destructive commands. NEVER "
@@ -317,6 +357,13 @@ def _build_messages(
     ):
         system_msgs.append({"role": "system", "content": _context_block()})
 
+    # .shellllmrc — per-project conventions ("we use pnpm", "prefer
+    # ripgrep") ride along with every call inside that tree. Read fresh
+    # every turn so edits take effect immediately.
+    rc_block = read_rc_block()
+    if rc_block:
+        system_msgs.append({"role": "system", "content": rc_block})
+
     # Terminal context is opt-in per call (`--ctx` / `--fix`) and
     # per-turn ephemeral: rebuilt every call, never persisted (system
     # messages are stripped before the session is written).
@@ -328,6 +375,127 @@ def _build_messages(
     history = list(session.messages)
     user_msg: dict[str, Any] = {"role": "user", "content": prompt}
     return system_msgs + history + [user_msg], history + [user_msg]
+
+
+def _try_extract_diagnosis(text: str) -> str | None:
+    """Recover the ``diagnosis`` field from partial *or* full JSON.
+
+    Uses ``raw_decode`` on just the string value so we only return a
+    diagnosis when its closing quote has already streamed in. This
+    avoids the failure mode where a partial buffer like
+    ``{"diagnosis":"Ty`` is silently "completed" by appending ``"}`` —
+    which would parse to ``"Ty"`` and surface a truncated diagnosis.
+    """
+    key_pos = text.find('"diagnosis"')
+    if key_pos == -1:
+        return None
+    colon_pos = text.find(":", key_pos + len('"diagnosis"'))
+    if colon_pos == -1:
+        return None
+    pos = colon_pos + 1
+    while pos < len(text) and text[pos] in " \t\n\r":
+        pos += 1
+    if pos >= len(text) or text[pos] != '"':
+        return None
+    try:
+        value, _end = json.JSONDecoder().raw_decode(text[pos:])
+    except json.JSONDecodeError:
+        return None
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _extract_complete_command_items(
+    text: str, already_yielded: int
+) -> tuple[list[dict[str, Any]], int]:
+    """Parse complete {command, note} objects from a partial JSON stream.
+
+    The model is constrained by a JSON schema, so the stream looks like::
+
+        {"diagnosis":"...","commands":[{"command":"...","note":"..."},{...
+
+    We find the start of the ``commands`` array, then use ``raw_decode``
+    to chip off complete objects one at a time. Returns
+    ``(new_objects_since_last_call, total_count)`` so the caller can
+    advance their cursor monotonically.
+
+    Robust against partial strings with escapes (``raw_decode`` respects
+    JSON escaping). Returns ``([], already_yielded)`` until enough text
+    has streamed in to form the first object.
+    """
+    idx = text.find('"commands"')
+    if idx == -1:
+        return [], already_yielded
+    arr_start = text.find("[", idx)
+    if arr_start == -1:
+        return [], already_yielded
+
+    decoder = json.JSONDecoder()
+    pos = arr_start + 1
+    items: list[dict[str, Any]] = []
+    while pos < len(text):
+        while pos < len(text) and text[pos] in " \t\n\r,":
+            pos += 1
+        if pos >= len(text) or text[pos] == "]":
+            break
+        try:
+            obj, end = decoder.raw_decode(text[pos:])
+        except json.JSONDecodeError:
+            break  # Current object is still streaming — wait for more text.
+        if isinstance(obj, dict) and "command" in obj and "note" in obj:
+            items.append(obj)
+        pos += end
+
+    new_items = items[already_yielded:]
+    return new_items, len(items)
+
+
+def _stream_command_items(
+    messages: list[dict[str, Any]],
+    *,
+    schema: dict[str, Any],
+    name: str,
+    on_diagnosis: Any = None,
+) -> Iterator[dict[str, Any]]:
+    """Yield ``{command, note}`` dicts as the model streams them.
+
+    After the stream is exhausted, the final yielded value (via
+    ``StopIteration.value``) is the full raw text content — callers
+    that need to persist the model's output (e.g. for the comma
+    session log) read it from ``iter.gi_frame.f_locals`` or just hold
+    a reference to the last full text.
+
+    ``on_diagnosis`` (if provided) is called once with the diagnosis
+    string as soon as it can be parsed from the stream — used to
+    surface the ``↻ Typo:`` line *above* the picker without waiting
+    for the full response.
+    """
+    buf = ""
+    yielded = 0
+    diag_surfaced = False
+    for ev in chat_stream(
+        messages,
+        max_tokens=512,
+        response_format={
+            "type": "json_schema",
+            "json_schema": {"name": name, "schema": schema, "strict": True},
+        },
+    ):
+        if ev["type"] == "content":
+            buf += ev["text"]
+            if on_diagnosis is not None and not diag_surfaced:
+                diag = _try_extract_diagnosis(buf)
+                if diag is not None:
+                    on_diagnosis(diag)
+                    diag_surfaced = True
+            new_items, total = _extract_complete_command_items(buf, yielded)
+            yielded = total
+            yield from new_items
+        # 'done' event marks end; nothing left to do.
+    # Stash the full text so the caller can retrieve it via .gi_frame
+    # after iteration. Not idiomatic but avoids a second return channel.
+    return buf  # type: ignore[return-value]
 
 
 def _ask_model(
@@ -464,23 +632,94 @@ def main() -> int:
         fix_mode=fix_mode,
     )
 
-    result = _ask_model(messages, fix_mode=fix_mode)
-    if result is None:
-        return 1
-    content, items = result
+    # Streaming hot path (fix-mode, no picker requested): the bare `,,`
+    # case. Most fixes are an obvious typo correction — the model
+    # produces the right answer fast, and waiting for the full JSON
+    # before doing anything wastes ~5-10s per call on the larger tiers.
+    # We stream the response and, as soon as the FIRST complete
+    # `{command,note}` object is parseable, print it and exit. The
+    # diagnosis line is surfaced as soon as it's parsed too, which
+    # keeps the "↻ Typo:..." UX intact without blocking.
+    #
+    # Two cases force a fall-through to the non-streaming path:
+    #   - --pick was requested (we need the full list for fzf)
+    #   - the model emitted 'Uncertain:' (we want to show alternatives)
+    # In both, the streamed items are accumulated and reused so we
+    # don't double the work.
+    schema = FIX_SCHEMA if fix_mode else SCHEMA
+    schema_name = "fix" if fix_mode else "commands"
+    accumulated: list[dict[str, str]] = []
+    diag_holder: dict[str, str] = {}
 
-    # In fix mode (the typical `,,` flow) we trust the model's top
-    # suggestion and drop it straight on the user's prompt line — the
-    # diagnose-then-suggest design already surfaces *why* the model
-    # thinks this is the fix above. The picker is one keystroke too
-    # many for obvious typos. `,, --pick` (or `, --fix --pick`) opts
-    # back into the picker when alternatives matter.
-    if fix_mode and not pick_mode:
-        chosen = items[0]["command"]
+    def _capture_diag(diag: str) -> None:
+        # Capture only; do NOT write to stderr while the spinner is
+        # holding the cursor — those raw writes get mangled by Rich's
+        # cursor positioning. The captured value is surfaced after
+        # the spinner context exits.
+        diag_holder["text"] = diag
+
+    try:
+        with _err.status("[cyan]thinking…[/cyan]", spinner="dots") as spinner:
+            stream = _stream_command_items(
+                messages,
+                schema=schema,
+                name=schema_name,
+                on_diagnosis=_capture_diag if fix_mode else None,
+            )
+            for item in stream:
+                accumulated.append(item)
+                spinner.update(f"[cyan]thinking…[/cyan] [dim]({len(accumulated)} so far)[/dim]")
+                # Fix-mode no-picker no-Uncertain: bail the moment we
+                # have one item AND a non-uncertain diagnosis. We
+                # require both the item and a diagnosis to avoid
+                # racing the picker fall-through for Uncertain.
+                if (
+                    fix_mode
+                    and not pick_mode
+                    and len(accumulated) == 1
+                    and diag_holder.get("text", "")
+                    and not diag_holder["text"].lower().startswith("uncertain:")
+                ):
+                    break
+            # Drain the rest if we broke early so the stream is closed
+            # cleanly (don't leave a dangling HTTP connection).
+            try:
+                for item in stream:
+                    accumulated.append(item)
+            except StopIteration:
+                pass
+    except LlamaServerError as exc:
+        _err.print(f"{_RED}, error:{_RESET} {exc}")
+        return 1
+
+    # Spinner is gone — now we can safely write the diagnosis line on
+    # stderr. The user sees this just above the command being dropped
+    # on their prompt, exactly mirroring the non-streaming UX.
+    if fix_mode and diag_holder.get("text", ""):
+        sys.stderr.write(f"{_DIM}{_CYAN}↻ {diag_holder['text']}{_RESET}\n")
+        sys.stderr.flush()
+
+    if not accumulated:
+        _err.print(f"{_RED}, error:{_RESET} no suggestions returned")
+        return 1
+
+    diagnosis = diag_holder.get("text", "")
+    model_uncertain = fix_mode and diagnosis.lower().startswith("uncertain:")
+
+    chosen: str
+    if fix_mode and not pick_mode and not model_uncertain:
+        chosen = accumulated[0]["command"]
     else:
-        chosen = _pick(items)
-        if not chosen:
+        picked = _pick(accumulated)
+        if not picked:
             return 1
+        chosen = picked
+
+    # Reconstruct a compact JSON blob to persist into the session log,
+    # mirroring the shape the non-streaming `chat()` would have returned.
+    content = json.dumps(
+        {"diagnosis": diagnosis, "commands": accumulated} if fix_mode else {"commands": accumulated}
+    )
 
     # Persist the turn for the next refinement. We store the raw JSON
     # the model produced so it sees its own prior list verbatim.

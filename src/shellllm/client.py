@@ -106,6 +106,7 @@ def chat_stream(
     messages: list[dict[str, Any]],
     *,
     tools: list[dict[str, Any]] | None = None,
+    response_format: dict[str, Any] | None = None,
     temperature: float = 0.2,
     max_tokens: int = 1500,
     enable_thinking: bool = False,
@@ -135,6 +136,8 @@ def chat_stream(
     if tools is not None:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
+    if response_format is not None:
+        payload["response_format"] = response_format
 
     pending: dict[int, dict[str, str]] = {}
     finish_reason: str | None = None

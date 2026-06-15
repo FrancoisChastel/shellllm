@@ -47,6 +47,7 @@ from .compact import (
 from .context import build_prelude
 from .embed import embed as embed_text
 from .memory import MemoryStore, render_memory_block
+from .project_context import read_rc_block
 from .safe_fs import WallViolation, safe_read_text
 from .session import SessionStore, sweep_expired
 from .shell_context import MAX_PIPED_CHARS, build_piped_block, build_shell_context_block
@@ -338,6 +339,13 @@ def run_agent(
         if ctx_block:
             system_msgs.append({"role": "system", "content": ctx_block})
 
+    # .shellllmrc — per-project conventions ride along with every call
+    # inside that tree. Read fresh every turn (no caching) so edits
+    # take effect immediately.
+    rc_block = read_rc_block()
+    if rc_block:
+        system_msgs.append({"role": "system", "content": rc_block})
+
     # Piped stdin (`make 2>&1 | ? what broke`) — explicit consent by
     # construction, so no ladder gate. We render it *into the user
     # message* (further down) rather than as a system block: local
@@ -387,7 +395,7 @@ def run_agent(
         full_text, tool_calls = stream_round(messages)
 
         if not tool_calls:
-            assistant_msg = {"role": "assistant", "content": full_text}
+            assistant_msg: dict[str, Any] = {"role": "assistant", "content": full_text}
             messages.append(assistant_msg)
             new_history_with_user.append(assistant_msg)
             if session is not None:
@@ -404,13 +412,13 @@ def run_agent(
             )
             return 0
 
-        assistant_msg = {
+        assistant_with_tools: dict[str, Any] = {
             "role": "assistant",
             "content": full_text,
             "tool_calls": tool_calls,
         }
-        messages.append(assistant_msg)
-        new_history_with_user.append(assistant_msg)
+        messages.append(assistant_with_tools)
+        new_history_with_user.append(assistant_with_tools)
 
         for call in tool_calls:
             name = call["function"]["name"]

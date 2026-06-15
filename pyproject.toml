@@ -30,6 +30,8 @@ dependencies = [
 dev = [
     "pytest>=8",
     "ruff>=0.6",
+    "mypy>=1.10",
+    "types-requests",
 ]
 
 [project.scripts]
@@ -76,3 +78,23 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["B018"]  # don't complain about useless attribute accesses in tests
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src/shellllm"]
+strict_optional = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+# We're a CLI app, not a library — `disallow_untyped_defs` would be too
+# noisy given how much zsh-shaped string slinging the code does. Start
+# with the "catch real bugs" subset and tighten over time.
+warn_unreachable = true
+no_implicit_optional = true
+check_untyped_defs = true
+# httpx ships types; rich does too. No need to install stubs.
+
+[[tool.mypy.overrides]]
+# Tests use a lot of monkeypatching with Any-shaped fakes; not the
+# place to fight types.
+module = "tests.*"
+ignore_errors = true
