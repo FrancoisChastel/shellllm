@@ -28,15 +28,18 @@ def isolated(tmp_path, monkeypatch):
 
 @pytest.fixture
 def fake_model(monkeypatch):
-    """Patch chat() to return a fixed JSON payload. Captures messages sent.
+    """Patch both chat() and chat_stream() to return a fixed payload.
 
     Adapts to the requested schema: fix mode (``json_schema.name == "fix"``)
     gets an extra ``diagnosis`` field, normal mode gets just ``commands``.
+
+    `chat_stream` mimics the real streaming protocol: yields the full
+    JSON as one 'content' event, then a 'done' event. That's enough
+    for the incremental parser to surface items + diagnosis.
     """
     sent: list[list[dict]] = []
 
-    def fake_chat(messages, **kwargs):
-        sent.append(list(messages))
+    def _payload(kwargs: dict) -> dict[str, Any]:
         name = ((kwargs.get("response_format") or {}).get("json_schema") or {}).get("name", "")
         payload: dict[str, Any] = {
             "commands": [
@@ -46,9 +49,20 @@ def fake_model(monkeypatch):
         }
         if name == "fix":
             payload["diagnosis"] = "Typo: the test fake diagnosed the failure."
-        return {"content": json.dumps(payload)}
+        return payload
+
+    def fake_chat(messages, **kwargs):
+        sent.append(list(messages))
+        return {"content": json.dumps(_payload(kwargs))}
+
+    def fake_chat_stream(messages, **kwargs):
+        sent.append(list(messages))
+        full = json.dumps(_payload(kwargs))
+        yield {"type": "content", "text": full}
+        yield {"type": "done", "finish_reason": "stop", "tool_calls": []}
 
     monkeypatch.setattr(comma, "chat", fake_chat)
+    monkeypatch.setattr(comma, "chat_stream", fake_chat_stream)
     return sent
 
 
@@ -65,6 +79,23 @@ def auto_pick(monkeypatch):
 def _run(argv, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["shellllm-comma", *argv])
     return comma.main()
+
+
+def _patch_chat_both(monkeypatch, fake_chat):
+    """Patch both chat() and chat_stream() with a single fake.
+
+    Tests that supply their own fake (rather than using the
+    ``fake_model`` fixture) need both surfaces patched now that the
+    streaming hot path runs ``chat_stream`` first.
+    """
+    monkeypatch.setattr(comma, "chat", fake_chat)
+
+    def streaming_wrap(messages, **kwargs):
+        reply = fake_chat(messages, **kwargs)
+        yield {"type": "content", "text": reply.get("content", "")}
+        yield {"type": "done", "finish_reason": "stop", "tool_calls": []}
+
+    monkeypatch.setattr(comma, "chat_stream", streaming_wrap)
 
 
 def test_help_returns_zero(monkeypatch, capsys, isolated):
@@ -283,7 +314,7 @@ def test_fix_uncertain_falls_through_to_picker(monkeypatch, capsys, isolated):
         pick_calls.append(items)
         return items[0]["command"]
 
-    monkeypatch.setattr(comma, "chat", fake_chat)
+    _patch_chat_both(monkeypatch, fake_chat)
     monkeypatch.setattr(comma, "_pick", record_pick)
     assert _run(["--fix"], monkeypatch) == 0
     assert len(pick_calls) == 1, (
@@ -370,7 +401,7 @@ def test_fix_uses_fix_schema(monkeypatch, capsys, isolated, fake_model, auto_pic
             )
         }
 
-    monkeypatch.setattr(comma, "chat", fake_chat_capture)
+    _patch_chat_both(monkeypatch, fake_chat_capture)
     assert _run(["--fix"], monkeypatch) == 0
     schema_name = sent_kwargs[0]["response_format"]["json_schema"]["name"]
     assert schema_name == "fix"
@@ -421,14 +452,12 @@ def test_redirect_for_ask_remember(monkeypatch, capsys, isolated):
     from shellllm import comma as comma_mod
 
     captured: list = []
-    monkeypatch.setattr(
-        comma_mod,
-        "chat",
-        lambda messages, **kw: (
-            captured.append(messages),
-            {"content": json.dumps({"commands": [{"command": "echo ok", "note": ""}]})},
-        )[1],
-    )
+
+    def fake_chat(messages, **kw):
+        captured.append(messages)
+        return {"content": json.dumps({"commands": [{"command": "echo ok", "note": ""}]})}
+
+    _patch_chat_both(monkeypatch, fake_chat)
     monkeypatch.setattr(comma_mod, "_pick", lambda items: items[0]["command"])
     assert _run(["--remember", "ripgrep"], monkeypatch) == 0
     # The flag became part of the prompt; the model still answered.

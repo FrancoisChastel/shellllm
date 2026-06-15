@@ -27,8 +27,10 @@ from typing import Any
 
 from rich.console import Console
 
+from collections.abc import Iterator
+
 from .archive import Archive
-from .client import LlamaServerError, chat
+from .client import LlamaServerError, chat, chat_stream
 from .embed import embed as embed_text
 from .project_context import read_rc_block
 from .session import SessionStore, sweep_expired
@@ -376,6 +378,126 @@ def _build_messages(
     return system_msgs + history + [user_msg], history + [user_msg]
 
 
+def _try_extract_diagnosis(text: str) -> str | None:
+    """Recover the ``diagnosis`` field from partial *or* full JSON.
+
+    Uses ``raw_decode`` on just the string value so we only return a
+    diagnosis when its closing quote has already streamed in. This
+    avoids the failure mode where a partial buffer like
+    ``{"diagnosis":"Ty`` is silently "completed" by appending ``"}`` —
+    which would parse to ``"Ty"`` and surface a truncated diagnosis.
+    """
+    key_pos = text.find('"diagnosis"')
+    if key_pos == -1:
+        return None
+    colon_pos = text.find(":", key_pos + len('"diagnosis"'))
+    if colon_pos == -1:
+        return None
+    pos = colon_pos + 1
+    while pos < len(text) and text[pos] in " \t\n\r":
+        pos += 1
+    if pos >= len(text) or text[pos] != '"':
+        return None
+    try:
+        value, _end = json.JSONDecoder().raw_decode(text[pos:])
+    except json.JSONDecodeError:
+        return None
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _extract_complete_command_items(text: str, already_yielded: int) -> tuple[list[dict[str, Any]], int]:
+    """Parse complete {command, note} objects from a partial JSON stream.
+
+    The model is constrained by a JSON schema, so the stream looks like::
+
+        {"diagnosis":"...","commands":[{"command":"...","note":"..."},{...
+
+    We find the start of the ``commands`` array, then use ``raw_decode``
+    to chip off complete objects one at a time. Returns
+    ``(new_objects_since_last_call, total_count)`` so the caller can
+    advance their cursor monotonically.
+
+    Robust against partial strings with escapes (``raw_decode`` respects
+    JSON escaping). Returns ``([], already_yielded)`` until enough text
+    has streamed in to form the first object.
+    """
+    idx = text.find('"commands"')
+    if idx == -1:
+        return [], already_yielded
+    arr_start = text.find("[", idx)
+    if arr_start == -1:
+        return [], already_yielded
+
+    decoder = json.JSONDecoder()
+    pos = arr_start + 1
+    items: list[dict[str, Any]] = []
+    while pos < len(text):
+        while pos < len(text) and text[pos] in " \t\n\r,":
+            pos += 1
+        if pos >= len(text) or text[pos] == "]":
+            break
+        try:
+            obj, end = decoder.raw_decode(text[pos:])
+        except json.JSONDecodeError:
+            break  # Current object is still streaming — wait for more text.
+        if isinstance(obj, dict) and "command" in obj and "note" in obj:
+            items.append(obj)
+        pos += end
+
+    new_items = items[already_yielded:]
+    return new_items, len(items)
+
+
+def _stream_command_items(
+    messages: list[dict[str, Any]],
+    *,
+    schema: dict[str, Any],
+    name: str,
+    on_diagnosis: Any = None,
+) -> Iterator[dict[str, Any]]:
+    """Yield ``{command, note}`` dicts as the model streams them.
+
+    After the stream is exhausted, the final yielded value (via
+    ``StopIteration.value``) is the full raw text content — callers
+    that need to persist the model's output (e.g. for the comma
+    session log) read it from ``iter.gi_frame.f_locals`` or just hold
+    a reference to the last full text.
+
+    ``on_diagnosis`` (if provided) is called once with the diagnosis
+    string as soon as it can be parsed from the stream — used to
+    surface the ``↻ Typo:`` line *above* the picker without waiting
+    for the full response.
+    """
+    buf = ""
+    yielded = 0
+    diag_surfaced = False
+    for ev in chat_stream(
+        messages,
+        max_tokens=512,
+        response_format={
+            "type": "json_schema",
+            "json_schema": {"name": name, "schema": schema, "strict": True},
+        },
+    ):
+        if ev["type"] == "content":
+            buf += ev["text"]
+            if on_diagnosis is not None and not diag_surfaced:
+                diag = _try_extract_diagnosis(buf)
+                if diag is not None:
+                    on_diagnosis(diag)
+                    diag_surfaced = True
+            new_items, total = _extract_complete_command_items(buf, yielded)
+            yielded = total
+            for item in new_items:
+                yield item
+        # 'done' event marks end; nothing left to do.
+    # Stash the full text so the caller can retrieve it via .gi_frame
+    # after iteration. Not idiomatic but avoids a second return channel.
+    return buf  # type: ignore[return-value]
+
+
 def _ask_model(
     messages: list[dict[str, Any]],
     *,
@@ -510,32 +632,90 @@ def main() -> int:
         fix_mode=fix_mode,
     )
 
-    result = _ask_model(messages, fix_mode=fix_mode)
-    if result is None:
-        return 1
-    content, items = result
+    # Streaming hot path (fix-mode, no picker requested): the bare `,,`
+    # case. Most fixes are an obvious typo correction — the model
+    # produces the right answer fast, and waiting for the full JSON
+    # before doing anything wastes ~5-10s per call on the larger tiers.
+    # We stream the response and, as soon as the FIRST complete
+    # `{command,note}` object is parseable, print it and exit. The
+    # diagnosis line is surfaced as soon as it's parsed too, which
+    # keeps the "↻ Typo:..." UX intact without blocking.
+    #
+    # Two cases force a fall-through to the non-streaming path:
+    #   - --pick was requested (we need the full list for fzf)
+    #   - the model emitted 'Uncertain:' (we want to show alternatives)
+    # In both, the streamed items are accumulated and reused so we
+    # don't double the work.
+    schema = FIX_SCHEMA if fix_mode else SCHEMA
+    schema_name = "fix" if fix_mode else "commands"
+    accumulated: list[dict[str, str]] = []
+    diag_holder: dict[str, str] = {}
 
-    # In fix mode (the typical `,,` flow) we trust the model's top
-    # suggestion and drop it straight on the user's prompt line — the
-    # diagnose-then-suggest design already surfaces *why* the model
-    # thinks this is the fix above. The picker is one keystroke too
-    # many for obvious typos. `,, --pick` opts back into the picker
-    # when alternatives matter, AND we automatically fall through to
-    # the picker when the model itself emits 'Uncertain:' — letting
-    # the model admit "I don't know which fix is right" is better
-    # than picking the wrong one with false confidence.
+    def _capture_diag(diag: str) -> None:
+        # Capture only; do NOT write to stderr while the spinner is
+        # holding the cursor — those raw writes get mangled by Rich's
+        # cursor positioning. The captured value is surfaced after
+        # the spinner context exits.
+        diag_holder["text"] = diag
+
     try:
-        parsed = json.loads(content) if fix_mode else {}
-    except json.JSONDecodeError:
-        parsed = {}
-    diagnosis = (parsed.get("diagnosis") or "").strip()
+        with _err.status("[cyan]thinking…[/cyan]", spinner="dots") as spinner:
+            stream = _stream_command_items(
+                messages,
+                schema=schema,
+                name=schema_name,
+                on_diagnosis=_capture_diag if fix_mode else None,
+            )
+            for item in stream:
+                accumulated.append(item)
+                spinner.update(f"[cyan]thinking…[/cyan] [dim]({len(accumulated)} so far)[/dim]")
+                # Fix-mode no-picker no-Uncertain: bail the moment we
+                # have one item AND a non-uncertain diagnosis. We
+                # require both the item and a diagnosis to avoid
+                # racing the picker fall-through for Uncertain.
+                if (
+                    fix_mode
+                    and not pick_mode
+                    and len(accumulated) == 1
+                    and diag_holder.get("text", "")
+                    and not diag_holder["text"].lower().startswith("uncertain:")
+                ):
+                    break
+            # Drain the rest if we broke early so the stream is closed
+            # cleanly (don't leave a dangling HTTP connection).
+            try:
+                for item in stream:
+                    accumulated.append(item)
+            except StopIteration:
+                pass
+    except LlamaServerError as exc:
+        _err.print(f"{_RED}, error:{_RESET} {exc}")
+        return 1
+
+    # Spinner is gone — now we can safely write the diagnosis line on
+    # stderr. The user sees this just above the command being dropped
+    # on their prompt, exactly mirroring the non-streaming UX.
+    if fix_mode and diag_holder.get("text", ""):
+        sys.stderr.write(f"{_DIM}{_CYAN}↻ {diag_holder['text']}{_RESET}\n")
+        sys.stderr.flush()
+
+    if not accumulated:
+        _err.print(f"{_RED}, error:{_RESET} no suggestions returned")
+        return 1
+
+    diagnosis = diag_holder.get("text", "")
     model_uncertain = fix_mode and diagnosis.lower().startswith("uncertain:")
+
     if fix_mode and not pick_mode and not model_uncertain:
-        chosen = items[0]["command"]
+        chosen = accumulated[0]["command"]
     else:
-        chosen = _pick(items)
+        chosen = _pick(accumulated)
         if not chosen:
             return 1
+
+    # Reconstruct a compact JSON blob to persist into the session log,
+    # mirroring the shape the non-streaming `chat()` would have returned.
+    content = json.dumps({"diagnosis": diagnosis, "commands": accumulated} if fix_mode else {"commands": accumulated})
 
     # Persist the turn for the next refinement. We store the raw JSON
     # the model produced so it sees its own prior list verbatim.
