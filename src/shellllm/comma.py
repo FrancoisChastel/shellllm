@@ -21,13 +21,12 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from rich.console import Console
-
-from collections.abc import Iterator
 
 from .archive import Archive
 from .client import LlamaServerError, chat, chat_stream
@@ -407,7 +406,9 @@ def _try_extract_diagnosis(text: str) -> str | None:
     return None
 
 
-def _extract_complete_command_items(text: str, already_yielded: int) -> tuple[list[dict[str, Any]], int]:
+def _extract_complete_command_items(
+    text: str, already_yielded: int
+) -> tuple[list[dict[str, Any]], int]:
     """Parse complete {command, note} objects from a partial JSON stream.
 
     The model is constrained by a JSON schema, so the stream looks like::
@@ -490,8 +491,7 @@ def _stream_command_items(
                     diag_surfaced = True
             new_items, total = _extract_complete_command_items(buf, yielded)
             yielded = total
-            for item in new_items:
-                yield item
+            yield from new_items
         # 'done' event marks end; nothing left to do.
     # Stash the full text so the caller can retrieve it via .gi_frame
     # after iteration. Not idiomatic but avoids a second return channel.
@@ -706,16 +706,20 @@ def main() -> int:
     diagnosis = diag_holder.get("text", "")
     model_uncertain = fix_mode and diagnosis.lower().startswith("uncertain:")
 
+    chosen: str
     if fix_mode and not pick_mode and not model_uncertain:
         chosen = accumulated[0]["command"]
     else:
-        chosen = _pick(accumulated)
-        if not chosen:
+        picked = _pick(accumulated)
+        if not picked:
             return 1
+        chosen = picked
 
     # Reconstruct a compact JSON blob to persist into the session log,
     # mirroring the shape the non-streaming `chat()` would have returned.
-    content = json.dumps({"diagnosis": diagnosis, "commands": accumulated} if fix_mode else {"commands": accumulated})
+    content = json.dumps(
+        {"diagnosis": diagnosis, "commands": accumulated} if fix_mode else {"commands": accumulated}
+    )
 
     # Persist the turn for the next refinement. We store the raw JSON
     # the model produced so it sees its own prior list verbatim.

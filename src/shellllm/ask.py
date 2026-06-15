@@ -395,7 +395,7 @@ def run_agent(
         full_text, tool_calls = stream_round(messages)
 
         if not tool_calls:
-            assistant_msg = {"role": "assistant", "content": full_text}
+            assistant_msg: dict[str, Any] = {"role": "assistant", "content": full_text}
             messages.append(assistant_msg)
             new_history_with_user.append(assistant_msg)
             if session is not None:
@@ -412,13 +412,13 @@ def run_agent(
             )
             return 0
 
-        assistant_msg = {
+        assistant_with_tools: dict[str, Any] = {
             "role": "assistant",
             "content": full_text,
             "tool_calls": tool_calls,
         }
-        messages.append(assistant_msg)
-        new_history_with_user.append(assistant_msg)
+        messages.append(assistant_with_tools)
+        new_history_with_user.append(assistant_with_tools)
 
         for call in tool_calls:
             name = call["function"]["name"]
