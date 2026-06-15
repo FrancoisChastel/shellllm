@@ -34,7 +34,15 @@ exec zsh
 
 Don't want to manage the server yourself? `export SHELLLM_AUTOSTART=1` and the first `,` or `?` starts it on demand.
 
-Not on zsh? The Python CLIs (`shellllm-comma`, `shellllm-ask`, `shellllm-recall`) work in bash, fish, or any POSIX shell. See [CONFIGURATION.md#using-shellllm-without-zsh](CONFIGURATION.md#using-shellllm-without-zsh) for a minimal bash adapter.
+### Pick your shell
+
+| Shell | One-line setup | Get |
+|---|---|---|
+| **zsh** | `echo 'source "$(brew --prefix)/share/shellllm/shellllm.zsh"' >> ~/.zshrc` | the full glyph CLI: `,` `,,` `?` `??` `???` |
+| **bash** | `echo 'source "$(brew --prefix)/share/shellllm/shellllm.bash"' >> ~/.bashrc` | aliases: `llmc` (`,`), `llmf` (`,,`), `llma` (`?`), `llmm` (`???`) |
+| **fish / any POSIX** | nothing — just call the CLIs | `shellllm-comma`, `shellllm-ask`, `shellllm-recall` |
+
+For bash, install [bash-preexec](https://github.com/rcaloras/bash-preexec) first so `llmf` (the repair flow) can see the previous command. See [CONFIGURATION.md#using-shellllm-without-zsh](CONFIGURATION.md#using-shellllm-without-zsh) for the full reference.
 
 ## The five commands
 
