@@ -47,6 +47,7 @@ from .compact import (
 from .context import build_prelude
 from .embed import embed as embed_text
 from .memory import MemoryStore, render_memory_block
+from .project_context import read_rc_block
 from .safe_fs import WallViolation, safe_read_text
 from .session import SessionStore, sweep_expired
 from .shell_context import MAX_PIPED_CHARS, build_piped_block, build_shell_context_block
@@ -337,6 +338,13 @@ def run_agent(
         ctx_block = build_shell_context_block()
         if ctx_block:
             system_msgs.append({"role": "system", "content": ctx_block})
+
+    # .shellllmrc — per-project conventions ride along with every call
+    # inside that tree. Read fresh every turn (no caching) so edits
+    # take effect immediately.
+    rc_block = read_rc_block()
+    if rc_block:
+        system_msgs.append({"role": "system", "content": rc_block})
 
     # Piped stdin (`make 2>&1 | ? what broke`) — explicit consent by
     # construction, so no ladder gate. We render it *into the user

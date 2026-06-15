@@ -30,6 +30,7 @@ from rich.console import Console
 from .archive import Archive
 from .client import LlamaServerError, chat
 from .embed import embed as embed_text
+from .project_context import read_rc_block
 from .session import SessionStore, sweep_expired
 from .shell_context import build_shell_context_block
 
@@ -316,6 +317,13 @@ def _build_messages(
         first_turn or resumed or session.meta.last_pwd != pwd or session.meta.last_date != date
     ):
         system_msgs.append({"role": "system", "content": _context_block()})
+
+    # .shellllmrc — per-project conventions ("we use pnpm", "prefer
+    # ripgrep") ride along with every call inside that tree. Read fresh
+    # every turn so edits take effect immediately.
+    rc_block = read_rc_block()
+    if rc_block:
+        system_msgs.append({"role": "system", "content": rc_block})
 
     # Terminal context is opt-in per call (`--ctx` / `--fix`) and
     # per-turn ephemeral: rebuilt every call, never persisted (system
