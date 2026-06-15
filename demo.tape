@@ -123,10 +123,12 @@ Sleep 1s
 Enter
 Sleep 3s
 
-# ── Beat 2 — `,,` diagnoses then fixes the previous command ─────────────
+# ── Beat 2 — `,,` diagnoses, then drops the fix on the prompt line ──────
 # A real flag typo on `find`. BSD and GNU find both accept `-type`, so
-# the corrected command works on every platform — `,,` diagnoses the
-# typo in one stderr line and proposes the corrected command first.
+# the corrected command works everywhere. `,,` prints the diagnosis on
+# stderr and drops the model's top fix directly on the next prompt
+# line — no picker. You read both, then Enter to run, or edit / Ctrl-C.
+# `,, --pick` would show the full picker when alternatives matter.
 Type "find . -tpye f -name '*.py'"
 Sleep 500ms
 Enter
@@ -134,12 +136,11 @@ Sleep 1500ms
 Type ",,"
 Sleep 800ms
 Enter
-Wait+Screen@30s /enter: drop on prompt/
-Sleep 800ms
+# Wait for the diagnosis line and the dropped fix; give the audience
+# time to read both before pressing Enter to run.
+Sleep 9s
 Enter
-Sleep 1s
-Enter
-Sleep 4s
+Sleep 3s
 Type "clear"
 Enter
 Sleep 400ms
