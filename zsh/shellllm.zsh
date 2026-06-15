@@ -266,6 +266,123 @@ function _shellllm_server_up() {
   curl -fsS -m 1 "http://127.0.0.1:${port}/health" >/dev/null 2>&1
 }
 
+# ─── `?? --doctor` — paste-into-issue health check ──────────────────────
+#
+# Output is intentionally plain ASCII (no Unicode, no colour) so it
+# round-trips through GitHub issue bodies, Slack pastes, and email
+# verbatim. Every check is read-only — we never start/stop anything
+# during a doctor run.
+function _shellllm_doctor() {
+  local _CHECK="[ok]" _CROSS="[--]" _WARN="[!!]" _DASH="  ·  "
+  local exit_code=0
+
+  print -- "shellllm doctor — $(date '+%Y-%m-%d %H:%M:%S %Z')"
+  print -- ""
+
+  # ── platform basics ──
+  print -- "platform:"
+  printf '  uname  : %s\n' "$(uname -srm 2>/dev/null)"
+  printf '  shell  : %s (%s)\n' "${ZSH_VERSION:-?}" "${SHELL:-?}"
+  print -- ""
+
+  # ── binaries on PATH ──
+  # Required: comma/ask/recall (the CLIs), llama-server, fzf (picker
+  # falls back to stdin but the UX drops noticeably).
+  # Optional: huggingface-cli (only needed to download new models; if
+  # all tiers are already cached, you never call it again).
+  print -- "binaries on \$PATH:"
+  local b
+  for b in shellllm-comma shellllm-ask shellllm-recall llama-server fzf; do
+    if command -v "$b" >/dev/null 2>&1; then
+      printf '  %s %-18s %s\n' "$_CHECK" "$b" "$(command -v "$b")"
+    else
+      printf '  %s %-18s not found\n' "$_CROSS" "$b"
+      exit_code=1
+    fi
+  done
+  if command -v huggingface-cli >/dev/null 2>&1; then
+    printf '  %s %-18s %s\n' "$_CHECK" "huggingface-cli" "$(command -v huggingface-cli)"
+  else
+    printf '  %s %-18s optional (only needed to download new tier models)\n' "$_DASH" "huggingface-cli"
+  fi
+  print -- ""
+
+  # ── zsh layer ──
+  print -- "zsh layer:"
+  if typeset -f _shellllm_start >/dev/null 2>&1; then
+    printf '  %s shellllm.zsh sourced\n' "$_CHECK"
+  else
+    printf '  %s shellllm.zsh NOT sourced — add to ~/.zshrc:\n' "$_CROSS"
+    print -- "         source \"\$(brew --prefix)/share/shellllm/shellllm.zsh\""
+    exit_code=1
+  fi
+  printf '  SHELLLM_SHELL_CONTEXT  : %s\n' "${SHELLLM_SHELL_CONTEXT:-(unset)}"
+  printf '  SHELLLM_BASE_URL       : %s\n' "${SHELLLM_BASE_URL:-(default — http://127.0.0.1:${SHELLLM_PORT})}"
+  printf '  SHELLLM_AUTOSTART      : %s\n' "${SHELLLM_AUTOSTART:-(unset)}"
+  print -- ""
+
+  # ── llama-server tiers ──
+  print -- "servers:"
+  local any_up=0 t p name
+  for t in "${_SHELLLM_TIER_ORDER[@]}"; do
+    p="${_SHELLLM_TIER_PORT[$t]}"
+    if _shellllm_server_up "$p"; then
+      name=$(_shellllm_running_model "$p")
+      printf '  %s %-8s :%-5s %s%s\n' "$_CHECK" "$t" "$p" "${name:-?}" ""
+      any_up=1
+    else
+      printf '  %s %-8s :%-5s down\n' "$_CROSS" "$t" "$p"
+    fi
+  done
+  if _shellllm_embed_up; then
+    printf '  %s embed    :%-5s up\n' "$_CHECK" "$SHELLLM_EMBED_PORT"
+  else
+    printf '  %s embed    :%-5s down (optional — needed only for semantic recall)\n' "$_DASH" "$SHELLLM_EMBED_PORT"
+  fi
+  if (( ! any_up )); then
+    printf '  %s no chat tier is up — start one with `?? --start fast`\n' "$_WARN"
+    exit_code=1
+  fi
+  print -- ""
+
+  # ── archive + memory ──
+  print -- "archive + memory:"
+  if command -v shellllm-recall >/dev/null 2>&1; then
+    local status_line
+    status_line=$(shellllm-recall --status 2>/dev/null)
+    if [[ -n $status_line ]]; then
+      printf '  %s %s\n' "$_CHECK" "$status_line"
+    else
+      printf '  %s archive unreachable\n' "$_CROSS"
+      exit_code=1
+    fi
+  else
+    printf '  %s shellllm-recall missing — skipping\n' "$_CROSS"
+  fi
+  print -- ""
+
+  # ── tier models on disk ──
+  print -- "tier models in HF cache:"
+  for t in "${_SHELLLM_TIER_ORDER[@]}"; do
+    local repo="${_SHELLLM_TIER_REPO[$t]}"
+    local gguf=$(_shellllm_find_gguf "$repo")
+    if [[ -f $gguf ]]; then
+      printf '  %s %-8s %s\n' "$_CHECK" "$t" "$repo"
+    else
+      printf '  %s %-8s %s (not downloaded)\n' "$_DASH" "$t" "$repo"
+    fi
+  done
+  print -- ""
+
+  if (( exit_code == 0 )); then
+    print -- "all checks passed."
+  else
+    print -- "some checks failed. paste this output into an issue if you're stuck:"
+    print -- "  https://github.com/FrancoisChastel/shellllm/issues/new"
+  fi
+  return $exit_code
+}
+
 # Returns the GGUF filename of whatever model is currently loaded on
 # the given port (via llama-server's OpenAI-shape /v1/models endpoint),
 # stripped of the trailing `.gguf`. Falls back to "" on any error so
@@ -451,11 +568,13 @@ function _shellllm_start() {
         fi
         return 0 ;;
       --list|-l) _shellllm_list_tiers; return 0 ;;
+      --doctor) _shellllm_doctor; return $? ;;
       --help|-h)
         print -- "?? — start the local llama-server"
         print -- "  ?? [--start <tier>] [--model PATH]"
         print -- "  ?? --list | --status | --stop [tier]"
         print -- "  ?? --start-embed <tier> | --status-embed | --stop-embed | --list-embed"
+        print -- "  ?? --doctor               health check (paste into an issue)"
         print -- "  per-call routing: , --fast …  /  ? --smart …  (tier must be up)"
         _shellllm_list_tiers
         print
