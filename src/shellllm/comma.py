@@ -136,22 +136,57 @@ def _system_prompt() -> str:
 
 
 def _fix_system_prompt() -> str:
-    """Used by `,,` / `, --fix`. Replaces the regular system prompt."""
+    """Used by `,,` / `, --fix`. Replaces the regular system prompt.
+
+    Carries few-shot examples for each category so smaller models
+    (Qwen3.6-35B-A3B in fast mode) get the categorisation right at
+    least as often as the dense 27B. The 'Uncertain:' escape hatch
+    lets the model admit ambiguity instead of forcing a wrong
+    classification — the CLI sees that and falls through to the
+    picker so the user picks the best option themselves.
+    """
     return (
         "You are a shell-command REPAIR assistant. The terminal context shows "
         "a command that just failed (with its exit status and any output). "
         "Do TWO things, in this order:\n"
         "\n"
         "1. DIAGNOSE in one short sentence WHY the command failed. Pick one "
-        "of three categories and lead with it:\n"
+        "of four categories and lead with it:\n"
         "   - 'Typo:' the syntax is broken (wrong flag, transposed letters, "
-        "missing arg). Example: 'Typo: `--grpe` should be `--grep`.'\n"
-        "   - 'Environment:' the command is fine but the world isn't (no "
-        "such file, not a git repo, permission denied, missing tool). "
-        "Example: 'Environment: not inside a git repository.'\n"
-        "   - 'Logic:' the command ran but did the wrong thing for the "
-        "user's goal. Example: 'Logic: `-type d` excludes regular files; "
-        "the *.log files are files, not directories.'\n"
+        "missing arg). The shell never invoked the user's intent.\n"
+        "   - 'Environment:' the syntax is fine but the world isn't (no "
+        "such file, not a git repo, permission denied, missing tool, wrong "
+        "directory).\n"
+        "   - 'Logic:' the command ran successfully but did the wrong thing "
+        "for the user's apparent goal (e.g. excluded the right files, used "
+        "the wrong unit, matched too broadly).\n"
+        "   - 'Uncertain:' you genuinely can't tell which of the above "
+        "applies, or multiple plausible fixes diverge sharply. Prefer this "
+        "over a confidently wrong category.\n"
+        "\n"
+        "Worked examples — match this shape precisely:\n"
+        "\n"
+        "  previous command: `git log --grpe 'fix'`     status: 129\n"
+        "  → Typo: `--grpe` should be `--grep`.\n"
+        "  → first command: `git log --grep 'fix'`\n"
+        "\n"
+        "  previous command: `git log -n 5`             status: 128\n"
+        "  output: fatal: not a git repository (or any of the parent directories): .git\n"
+        "  → Environment: not inside a git repository.\n"
+        "  → first command: `git init` (then re-run `git log`).\n"
+        "\n"
+        "  previous command: `cat nonexistent.conf`     status: 1\n"
+        "  → Environment: `nonexistent.conf` does not exist in this directory.\n"
+        "  → first command: `ls *.conf` (find the real filename first).\n"
+        "\n"
+        "  previous command: `find . -name '*.log' -type d`   status: 0\n"
+        "  → Logic: `-type d` matches directories, but `*.log` paths are files; the search returns nothing useful.\n"
+        "  → first command: `find . -name '*.log' -type f`\n"
+        "\n"
+        "  previous command: `kubectl get pods -n prod`      status: 1\n"
+        "  output: error: You must be logged in to the server (Unauthorized)\n"
+        "  → Uncertain: the auth context may be expired, the kubeconfig may point at the wrong cluster, or your token may need refresh — multiple distinct fixes apply.\n"
+        "  → first command: `kubectl config current-context` (figure out which cluster first).\n"
         "\n"
         "2. Propose 3 to 5 ACTIONABLE next commands. The FIRST item is your "
         "best single-shot guess at what the user actually wants to do now. "
@@ -161,6 +196,9 @@ def _fix_system_prompt() -> str:
         "`mkdir -p ...`, `cd ../other-dir`, `chmod +r ...`), then the "
         "original-as-intended command for after that.\n"
         "   - Logic → a different command that achieves the actual goal.\n"
+        "   - Uncertain → start with a SAFE inspection that narrows the "
+        "diagnosis (e.g. `kubectl config current-context`, `ls`, "
+        "`echo $PATH`), then offer the most likely fixes as alternatives.\n"
         "\n"
         "Each entry is one shell line + a terse note (≤80 chars). NEVER "
         "include `rm -rf`, `sudo`, or other destructive commands. NEVER "
@@ -481,9 +519,18 @@ def main() -> int:
     # suggestion and drop it straight on the user's prompt line — the
     # diagnose-then-suggest design already surfaces *why* the model
     # thinks this is the fix above. The picker is one keystroke too
-    # many for obvious typos. `,, --pick` (or `, --fix --pick`) opts
-    # back into the picker when alternatives matter.
-    if fix_mode and not pick_mode:
+    # many for obvious typos. `,, --pick` opts back into the picker
+    # when alternatives matter, AND we automatically fall through to
+    # the picker when the model itself emits 'Uncertain:' — letting
+    # the model admit "I don't know which fix is right" is better
+    # than picking the wrong one with false confidence.
+    try:
+        parsed = json.loads(content) if fix_mode else {}
+    except json.JSONDecodeError:
+        parsed = {}
+    diagnosis = (parsed.get("diagnosis") or "").strip()
+    model_uncertain = fix_mode and diagnosis.lower().startswith("uncertain:")
+    if fix_mode and not pick_mode and not model_uncertain:
         chosen = items[0]["command"]
     else:
         chosen = _pick(items)

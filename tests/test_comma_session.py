@@ -249,8 +249,46 @@ def test_fix_builds_repair_prompt(monkeypatch, capsys, isolated, fake_model, aut
     assert "DIAGNOSE" in system_text
     assert "Typo:" in system_text
     assert "Environment:" in system_text
+    assert "Logic:" in system_text
+    # The 'Uncertain:' escape hatch is part of the contract: the
+    # model can decline to pick a single category, and the CLI
+    # automatically falls through to the picker.
+    assert "Uncertain:" in system_text
     # Terminal context still rides along.
     assert "git push origin main" in system_text
+
+
+def test_fix_uncertain_falls_through_to_picker(monkeypatch, capsys, isolated):
+    """An 'Uncertain:' diagnosis must auto-open the picker, even without --pick."""
+    monkeypatch.setenv("SHELLLM_SHELL_CONTEXT", "cmd")
+    monkeypatch.setenv("SHELLLM_LAST_CMD", "kubectl get pods")
+    monkeypatch.setenv("SHELLLM_LAST_STATUS", "1")
+
+    def fake_chat(messages, **kwargs):
+        return {
+            "content": json.dumps(
+                {
+                    "diagnosis": "Uncertain: kubeconfig may be expired or wrong cluster.",
+                    "commands": [
+                        {"command": "kubectl config current-context", "note": "inspect"},
+                        {"command": "kubectl get pods", "note": "retry"},
+                    ],
+                }
+            )
+        }
+
+    pick_calls: list = []
+
+    def record_pick(items):
+        pick_calls.append(items)
+        return items[0]["command"]
+
+    monkeypatch.setattr(comma, "chat", fake_chat)
+    monkeypatch.setattr(comma, "_pick", record_pick)
+    assert _run(["--fix"], monkeypatch) == 0
+    assert len(pick_calls) == 1, (
+        "Uncertain diagnosis must surface the full picker so the user picks"
+    )
 
 
 def test_fix_appends_user_hint(monkeypatch, capsys, isolated, fake_model, auto_pick):
