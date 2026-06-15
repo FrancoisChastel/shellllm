@@ -43,6 +43,9 @@ _shellllm_with_ctx() {
 
 llmc()  { local s=$?; "$SHELLLM_COMMA" "$@"; }
 llmcc() { local s=$?; _shellllm_with_ctx "$s" "$SHELLLM_COMMA" --ctx "$@"; }
-llmf()  { local s=$?; _shellllm_with_ctx "$s" "$SHELLLM_COMMA" --fix; }
+# Bare `llmf` repairs; `llmf <intent>` repairs with your stated intent;
+# `llmf --pick [intent]` shows the picker. Top suggestion is printed to
+# stdout — the user pastes / runs it, never the function.
+llmf()  { local s=$?; _shellllm_with_ctx "$s" "$SHELLLM_COMMA" --fix "$@"; }
 llma()  { local s=$?; _shellllm_with_ctx "$s" "$SHELLLM_ASK" "$@"; }
 llmm()  { "$SHELLLM_RECALL" "$@"; }

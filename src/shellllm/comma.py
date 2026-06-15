@@ -171,14 +171,19 @@ def _fix_system_prompt() -> str:
 def _print_usage(*, to: Any = None) -> None:
     out = to or sys.stdout
     out.write(
-        "usage: , <what you want to do>          propose commands (no terminal context)\n"
-        "       ,, <what you want to do>         same, with terminal context (, --ctx)\n"
-        "       ,,                               fix the previous command (, --fix [hint])\n"
-        "       , --new <what you want to do>   start a fresh session\n"
+        "usage: , <prompt>                       propose commands via fzf picker\n"
+        "       ,,                               fix the previous command (top fix → prompt line)\n"
+        "       ,, <intent>                      fix using your stated intent\n"
+        "       ,, --pick [intent]               same, but show the picker (see alternatives)\n"
+        "       , --ctx <prompt>                propose with terminal context as background\n"
+        "       , --new <prompt>                start a fresh session\n"
         "       , --reset                       drop current session\n"
         "       , --history                     print session transcript\n"
         "       , --fast|--balanced|--smart …   route this call to a tier (zsh)\n"
         "       , --help                        show this message\n"
+        "\n"
+        "`,,` never executes anything — the suggestion lands on your prompt;\n"
+        "you confirm with Enter, edit it, or cancel with Ctrl-C.\n"
         "\n"
         "For facts and cross-session recall, see `??? --help`.\n"
     )
@@ -400,10 +405,15 @@ def main() -> int:
     if _consume_flag("--new"):
         session.archive_and_reset(archive=archive, embed_fn=_safe_embed)
 
-    # `,` is the context-free verb; `--ctx` (the zsh `,, <prompt>`) brings
-    # the terminal context along, and `--fix` (bare `,,`) implies it.
+    # `,` is the context-free verb; `, --ctx <prompt>` brings the
+    # terminal context along (the zsh `,,` glyph routes here when run
+    # with a prompt that the user wants treated as a refinement, not a
+    # repair); `, --fix` (the zsh bare `,,`) repairs the previous
+    # command. Fix-mode drops the model's top suggestion straight on
+    # the prompt — pass `--pick` to see the full picker instead.
     ctx_mode = _consume_flag("--ctx")
     fix_mode = _consume_flag("--fix")
+    pick_mode = _consume_flag("--pick")
     shell_ctx = ctx_mode or fix_mode
 
     prompt = " ".join(argv).strip()
@@ -459,9 +469,18 @@ def main() -> int:
         return 1
     content, items = result
 
-    chosen = _pick(items)
-    if not chosen:
-        return 1
+    # In fix mode (the typical `,,` flow) we trust the model's top
+    # suggestion and drop it straight on the user's prompt line — the
+    # diagnose-then-suggest design already surfaces *why* the model
+    # thinks this is the fix above. The picker is one keystroke too
+    # many for obvious typos. `,, --pick` (or `, --fix --pick`) opts
+    # back into the picker when alternatives matter.
+    if fix_mode and not pick_mode:
+        chosen = items[0]["command"]
+    else:
+        chosen = _pick(items)
+        if not chosen:
+            return 1
 
     # Persist the turn for the next refinement. We store the raw JSON
     # the model produced so it sees its own prior list verbatim.

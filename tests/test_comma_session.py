@@ -260,6 +260,62 @@ def test_fix_appends_user_hint(monkeypatch, capsys, isolated, fake_model, auto_p
     assert "I meant the dev branch" in user_msg
 
 
+def test_fix_default_skips_picker_and_prints_top(monkeypatch, capsys, isolated, fake_model):
+    """Bare `,,` must drop the model's top suggestion to stdout without invoking the picker."""
+    _enable_shell_ctx(monkeypatch)
+    pick_called = {"hit": False}
+
+    def fail_pick(items):
+        pick_called["hit"] = True
+        return None
+
+    monkeypatch.setattr(comma, "_pick", fail_pick)
+    assert _run(["--fix"], monkeypatch) == 0
+    out = capsys.readouterr().out
+    # `fake_model` fixture returns commands=[{ls -lh, "list with sizes"}, ...]
+    # so the top is "ls -lh" and it must reach stdout untouched.
+    assert out.strip() == "ls -lh"
+    assert pick_called["hit"] is False
+
+
+def test_fix_pick_flag_opts_back_into_picker(monkeypatch, capsys, isolated, fake_model):
+    """`,, --pick` must restore the picker for cases where alternatives matter."""
+    _enable_shell_ctx(monkeypatch)
+    pick_calls: list = []
+
+    def record_pick(items):
+        pick_calls.append(items)
+        return items[1]["command"]  # pick the second one to prove we routed through
+
+    monkeypatch.setattr(comma, "_pick", record_pick)
+    assert _run(["--fix", "--pick"], monkeypatch) == 0
+    assert len(pick_calls) == 1
+    assert capsys.readouterr().out.strip() == "ls -la"
+
+
+def test_fix_pick_with_intent(monkeypatch, capsys, isolated, fake_model, auto_pick):
+    """`--pick` must coexist with a free-form intent — neither swallows the other."""
+    _enable_shell_ctx(monkeypatch)
+    assert _run(["--fix", "--pick", "use", "ripgrep"], monkeypatch) == 0
+    user_msg = next(m["content"] for m in fake_model[0] if m["role"] == "user")
+    assert "use ripgrep" in user_msg
+
+
+def test_plain_comma_unchanged_still_uses_picker(
+    monkeypatch, capsys, isolated, fake_model, auto_pick
+):
+    """No-picker behavior is fix-mode-only; plain `,` keeps the fzf flow."""
+    pick_calls: list = []
+
+    def record_pick(items):
+        pick_calls.append(items)
+        return items[0]["command"]
+
+    monkeypatch.setattr(comma, "_pick", record_pick)
+    assert _run(["list", "files"], monkeypatch) == 0
+    assert len(pick_calls) == 1, "plain , must go through the picker"
+
+
 def test_fix_uses_fix_schema(monkeypatch, capsys, isolated, fake_model, auto_pick):
     """Fix mode must request the diagnose-then-suggest schema, not the plain one."""
     _enable_shell_ctx(monkeypatch)

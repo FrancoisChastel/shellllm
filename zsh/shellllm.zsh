@@ -205,17 +205,21 @@ function ,() {
 # default `cmd`) controls how much context rides along.
 function ,,() {
   local __last_status=$_SHELLLM_PREV_STATUS
-  # A leading tier flag (`,, --fast …`) is routing, not the prompt —
-  # pop it so the fix-vs-ctx switch only sees real arguments.
-  local -a tier
+  # `,,` is always fix mode. A leading tier flag is routing, not the
+  # prompt; `--pick` (anywhere) opts into the picker; everything else
+  # becomes "intent" — a hint the model uses to narrow the repair.
+  local -a tier pick rest
   if [[ "${1:-}" == --fast || "${1:-}" == --balanced || "${1:-}" == --smart ]]; then
     tier=("$1"); shift
   fi
-  if (( $# )); then
-    _shellllm_comma_run $__last_status ${tier[@]} --ctx "$@"
-  else
-    _shellllm_comma_run $__last_status ${tier[@]} --fix
-  fi
+  local a
+  for a in "$@"; do
+    case "$a" in
+      --pick) pick=(--pick) ;;
+      *)      rest+=("$a") ;;
+    esac
+  done
+  _shellllm_comma_run $__last_status ${tier[@]} --fix ${pick[@]} ${rest[@]}
 }
 
 # ─── `?` — answer. `noglob` is required because `?` is a zsh glob char.

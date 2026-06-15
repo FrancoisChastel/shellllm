@@ -41,7 +41,7 @@ Not on zsh? The Python CLIs (`shellllm-comma`, `shellllm-ask`, `shellllm-recall`
 | Command | What it does | Example |
 |---|---|---|
 | `, <prompt>` | Propose 3–5 shell commands, pick one in fzf, drop on prompt. Never executes. | `, the five largest files here` |
-| `,, [prompt]` | Same, but with terminal context attached. Bare `,,` repairs the previous command. | `,,` after a typo'd command |
+| `,,` | Repair the previous command. Top fix lands on your prompt line — no picker. `,, <intent>` for "I meant X"; `,, --pick` to see alternatives. | `,,` after a typo |
 | `? <question>` | Ask the model. Streams markdown, keeps a per-pane conversation. Reads piped input. | `? what does git stash do` |
 | `???` | Memory and recall. Bare query searches the archive; flags pin long-term facts. | `??? --add I prefer ripgrep` |
 | `??` | Start, stop, or check the local `llama-server`. | `?? --start fast` |
