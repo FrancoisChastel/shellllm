@@ -125,22 +125,29 @@ Sleep 3s
 
 # ── Beat 2 — `,,` diagnoses, then drops the fix on the prompt line ──────
 # A real flag typo on `find`. BSD and GNU find both accept `-type`, so
-# the corrected command works everywhere. `,,` prints the diagnosis on
-# stderr and drops the model's top fix directly on the next prompt
-# line — no picker. You read both, then Enter to run, or edit / Ctrl-C.
-# `,, --pick` would show the full picker when alternatives matter.
+# the corrected command works everywhere.
+#
+# Streaming hot path: as soon as the model emits the first complete
+# `{command, note}` object AND a non-Uncertain diagnosis, `,,` exits the
+# stream early. End-to-end latency is ~1.3s on the fast tier, vs 5-10s
+# for the old "wait for the full JSON" path. The diagnosis lands on
+# stderr; the corrected command lands directly on your prompt line —
+# no picker. Enter to run, edit, or Ctrl-C. `,, --pick` opts back into
+# the picker; `,, <intent>` adds a hint like "use ripgrep" that narrows
+# the repair.
 Type "find . -tpye f -name '*.py'"
 Sleep 500ms
 Enter
-Sleep 1500ms
+Sleep 1200ms
 Type ",,"
-Sleep 800ms
+Sleep 700ms
 Enter
-# Wait for the diagnosis line and the dropped fix; give the audience
-# time to read both before pressing Enter to run.
-Sleep 9s
+# Streaming: diagnosis + dropped command appear in ~1-2s on the fast
+# tier. The 3.5s sleep gives the audience time to read both lines
+# before the demo runs the command.
+Sleep 3500ms
 Enter
-Sleep 3s
+Sleep 2500ms
 Type "clear"
 Enter
 Sleep 400ms
